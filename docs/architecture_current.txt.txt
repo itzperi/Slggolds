@@ -1,0 +1,18 @@
+CURRENT APP STATE — DO NOT CHANGE
+
+Frontend:
+- Flutter app
+- Riverpod used for state
+- One main login/auth flow
+
+Backend:
+- Supabase authentication
+- Supabase database with security rules
+
+Known Problems:
+- After logout, staff login screen does not show
+- App logic changes but screen does not update
+
+IMPORTANT:
+This document describes how the app works TODAY.
+Do not try to “fix” auth until we finish Sprint 0.

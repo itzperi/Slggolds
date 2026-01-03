@@ -1,0 +1,399 @@
+// lib/main.dart
+
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import 'screens/login_screen.dart';
+import 'screens/customer/dashboard_screen.dart';
+import 'screens/auth/pin_setup_screen.dart';
+import 'screens/staff/staff_dashboard.dart';
+import 'screens/staff/staff_login_screen.dart';
+import 'utils/constants.dart';
+import 'services/auth_flow_notifier.dart';
+import 'services/role_routing_service.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await dotenv.load();
+
+  final supabaseUrl = dotenv.env['SUPABASE_URL'];
+  final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'];
+
+  if (supabaseUrl == null || supabaseUrl.isEmpty) {
+    throw Exception(
+      'SUPABASE_URL is not set in .env file. '
+      'Please copy .env.example to .env and add your Supabase credentials.',
+    );
+  }
+
+  if (supabaseAnonKey == null || supabaseAnonKey.isEmpty) {
+    throw Exception(
+      'SUPABASE_ANON_KEY is not set in .env file. '
+      'Please copy .env.example to .env and add your Supabase credentials.',
+    );
+  }
+
+  await Supabase.initialize(
+    url: supabaseUrl,
+    anonKey: supabaseAnonKey,
+  );
+
+  // One-time session bootstrap - check Supabase session and update AuthFlowNotifier
+  // This happens BEFORE UI renders, ensuring cold-start works correctly
+  final authFlowNotifier = AuthFlowNotifier();
+  authFlowNotifier.initializeSession();
+
+  // Auth state listener - checks mobile app access ONLY after SIGNED_IN event
+  // This ensures Supabase session is fully attached before checking access
+  // MUST be defined AFTER authFlowNotifier is created so it can access it
+  Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
+    final event = data.event;
+    
+    if (event == AuthChangeEvent.signedIn) {
+      try {
+        // Check mobile app access (only runs after session is attached)
+        debugPrint('AUTH LISTENER: Checking mobile app access...');
+        final hasAccess = await RoleRoutingService.checkMobileAppAccess();
+        debugPrint('AUTH LISTENER: Access check result = $hasAccess');
+        
+        if (!hasAccess) {
+          // Access denied - logout
+          debugPrint('AUTH LISTENER: Access denied, signing out');
+          await Supabase.instance.client.auth.signOut();
+        } else {
+          // Access granted - set authenticated state so AuthGate can route
+          debugPrint('AUTH LISTENER: Access granted, setting authenticated state');
+          authFlowNotifier.setAuthenticated();
+        }
+      } catch (e, stackTrace) {
+        // Access denied or error - logout
+        debugPrint('AUTH LISTENER: Exception caught: $e');
+        debugPrint('AUTH LISTENER: Stack trace: $stackTrace');
+        await Supabase.instance.client.auth.signOut();
+      }
+    } else if (event == AuthChangeEvent.signedOut) {
+      // Supabase session ended - force logout to reset state
+      debugPrint('AUTH LISTENER: signedOut event detected, forcing logout');
+      authFlowNotifier.forceLogout();
+    }
+  });
+
+  runApp(
+    ChangeNotifierProvider.value(
+      value: authFlowNotifier,
+      child: const MyApp(),
+    ),
+  );
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // AuthFlowNotifier is created in main() and passed via ChangeNotifierProvider.value
+    // This ensures initializeSession() runs before UI builds
+    return MaterialApp(
+      title: 'SLG Thangangal',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFD4AF37),
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: const AuthGate(),
+    );
+  }
+}
+
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  Widget? _roleBasedScreen;
+  bool _isCheckingRole = false;
+  AuthFlowState? _lastState;
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint('🔵 AuthGate.initState: Called');
+    
+    // NUCLEAR FIX: Manually listen to force rebuilds when Provider fails
+    final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+    authFlow.addListener(_forceRebuild);
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkRoleIfNeeded();
+    });
+  }
+  
+  @override
+  void dispose() {
+    // Remove manual listener
+    try {
+      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      authFlow.removeListener(_forceRebuild);
+    } catch (e) {
+      debugPrint('Error removing listener: $e');
+    }
+    super.dispose();
+  }
+  
+  void _forceRebuild() {
+    debugPrint('🔥 MANUAL REBUILD TRIGGERED by addListener');
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    debugPrint('🔵 AuthGate.didChangeDependencies: Called');
+    // Trigger routing check when dependencies change (e.g., Provider updates)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkRoleIfNeeded();
+    });
+  }
+
+  Future<void> _checkRoleIfNeeded() async {
+    final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+    
+    // Reset state when unauthenticated (logout)
+    if (authFlow.state == AuthFlowState.unauthenticated) {
+      if (_lastState != AuthFlowState.unauthenticated) {
+        // Logout detected - reset all routing state
+        setState(() {
+          _lastState = authFlow.state;
+          _roleBasedScreen = null;
+          _isCheckingRole = false;
+        });
+      }
+      return;
+    }
+    
+    // IDEMPOTENT ROUTING: If authenticated but no screen set, always route
+    // This removes dependency on transition detection and handles all cases:
+    // - Cold start auto-login
+    // - Manual login after logout
+    // - State changes that might be missed by transition detection
+    if (authFlow.state == AuthFlowState.authenticated) {
+      if (_roleBasedScreen == null && !_isCheckingRole) {
+        debugPrint('AuthGate: Triggering routing (authenticated but no screen)');
+        _lastState = authFlow.state;
+        await _checkRoleAndRoute();
+      } else {
+        debugPrint('AuthGate: Skipping routing - screen=${_roleBasedScreen != null}, checking=${_isCheckingRole}');
+        _lastState = authFlow.state;
+      }
+    } else {
+      _lastState = authFlow.state;
+    }
+  }
+
+  Future<void> _checkRoleAndRoute() async {
+    debugPrint('AuthGate._checkRoleAndRoute: START');
+    if (!mounted) {
+      debugPrint('AuthGate._checkRoleAndRoute: NOT MOUNTED, returning');
+      return;
+    }
+    
+    debugPrint('AuthGate._checkRoleAndRoute: Setting _isCheckingRole = true');
+    setState(() => _isCheckingRole = true);
+    
+    try {
+      // ← MOVE Provider.of INSIDE try block
+      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      debugPrint('AuthGate._checkRoleAndRoute: Got authFlow from Provider');
+      
+      // Access check is done in auth state listener (after SIGNED_IN event)
+      // Here we just fetch role and route
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      debugPrint('AuthGate._checkRoleAndRoute: Got userId = $userId');
+      
+      if (userId == null) {
+        debugPrint('AuthGate._checkRoleAndRoute: No userId, signing out');
+        await Supabase.instance.client.auth.signOut();
+        authFlow.forceLogout();
+        if (mounted) {
+          setState(() {
+            _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
+            _isCheckingRole = false;
+          });
+        }
+        return;
+      }
+
+      debugPrint('AuthGate._checkRoleAndRoute: Fetching profile for userId = $userId');
+      final profileResponse = await Supabase.instance.client
+          .from('profiles')
+          .select('id, role')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      debugPrint('AuthGate._checkRoleAndRoute: Profile response = $profileResponse');
+
+      if (profileResponse == null) {
+        debugPrint('AuthGate._checkRoleAndRoute: No profile found, signing out');
+        await Supabase.instance.client.auth.signOut();
+        authFlow.forceLogout();
+        if (mounted) {
+          setState(() {
+            _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
+            _isCheckingRole = false;
+          });
+        }
+        return;
+      }
+
+      final role = profileResponse['role'] as String?;
+      final profileId = profileResponse['id'] as String?;
+
+      debugPrint('AuthGate._checkRoleAndRoute: role = $role, profileId = $profileId');
+
+      if (role == null || profileId == null) {
+        debugPrint('AuthGate._checkRoleAndRoute: Role or profileId null, signing out');
+        await Supabase.instance.client.auth.signOut();
+        authFlow.forceLogout();
+        if (mounted) {
+          setState(() {
+            _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
+            _isCheckingRole = false;
+          });
+        }
+        return;
+      }
+
+      Widget targetScreen;
+      switch (role) {
+        case 'customer':
+          debugPrint('AuthGate._checkRoleAndRoute: Routing to customer dashboard');
+          targetScreen = const DashboardScreen(key: ValueKey('customer_dashboard'));
+          break;
+        case 'staff':
+          debugPrint('AuthGate._checkRoleAndRoute: Routing to staff dashboard');
+          targetScreen = StaffDashboard(key: const ValueKey('staff_dashboard'), staffId: profileId);
+          break;
+        default:
+          debugPrint('AuthGate._checkRoleAndRoute: Unknown role, signing out');
+          await Supabase.instance.client.auth.signOut();
+          authFlow.forceLogout();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('This account does not have mobile app access.'),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 4),
+              ),
+            );
+            setState(() {
+              _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
+              _isCheckingRole = false;
+            });
+          }
+          return;
+      }
+
+      if (mounted) {
+        setState(() {
+          _roleBasedScreen = targetScreen;
+          _isCheckingRole = false;
+        });
+        debugPrint('AuthGate._checkRoleAndRoute: ROUTED TO ${_roleBasedScreen.runtimeType}');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('AuthGate._checkRoleAndRoute: ERROR caught - $e');
+      debugPrint('AuthGate._checkRoleAndRoute: Stack trace - $stackTrace');
+      
+      // Access denied or error - logout
+      try {
+        await Supabase.instance.client.auth.signOut();
+      } catch (signOutError) {
+        debugPrint('AuthGate._checkRoleAndRoute: Sign out also failed - $signOutError');
+      }
+      
+      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      authFlow.forceLogout();
+      
+      if (mounted) {
+        final message = e.toString().replaceFirst('Exception: ', '');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message.isNotEmpty ? message : 'Authentication error occurred.'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        setState(() {
+          _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
+          _isCheckingRole = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authFlow = Provider.of<AuthFlowNotifier>(context); // ← Use this instead
+    debugPrint('🟢 AuthGate.build() via Provider.of - state = ${authFlow.state}');
+    debugPrint('🟢 AuthGate.build() - Instance hashCode = ${authFlow.hashCode}');
+    
+    switch (authFlow.state) {
+      case AuthFlowState.unauthenticated:
+        debugPrint('🟢 Returning LoginScreen');
+        return const LoginScreen(key: ValueKey('login_screen'));
+      
+      case AuthFlowState.staffLogin:
+        debugPrint('🟢 Returning StaffLoginScreen');
+        return const StaffLoginScreen(key: ValueKey('staff_login_screen'));
+      
+      case AuthFlowState.otpVerifiedNeedsPin:
+        debugPrint('🟢 Returning PinSetupScreen');
+        return PinSetupScreen(
+          key: const ValueKey('pin_setup_screen'),
+          phoneNumber: authFlow.phoneNumber ?? '',
+          isFirstTime: authFlow.isFirstTime,
+          isReset: authFlow.isResetPin,
+        );
+      
+      case AuthFlowState.authenticated:
+        debugPrint('🟢 Authenticated state - checking role screen');
+        
+        // CRITICAL: Trigger role check if needed
+        if (_roleBasedScreen == null && !_isCheckingRole) {
+          debugPrint('🟢 No role screen yet, scheduling role check');
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            debugPrint('🟢 PostFrameCallback: Calling _checkRoleIfNeeded()');
+            _checkRoleIfNeeded();
+          });
+        }
+        
+        // If we have a cached screen, return it
+        if (_roleBasedScreen != null) {
+          debugPrint('🟢 Returning cached role screen: ${_roleBasedScreen.runtimeType}');
+          return _roleBasedScreen!;
+        }
+        
+        // Show loading while checking role
+        debugPrint('🟢 Showing loading (checking: $_isCheckingRole, screen: ${_roleBasedScreen != null})');
+        return const Scaffold(
+          backgroundColor: Color(0xFF140A33),
+          body: Center(
+            child: CircularProgressIndicator(
+              color: Color(0xFFD4AF37),
+            ),
+          ),
+        );
+    }
+  }
+}
