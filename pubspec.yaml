@@ -46,6 +46,7 @@ dependencies:
   url_launcher: ^6.2.0
   intl: ^0.18.1
   provider: ^6.1.5
+  flutter_riverpod: ^2.5.1
 
 dev_dependencies:
   flutter_test:

@@ -1,9 +1,14 @@
 // lib/main.dart
 
+// ⚠️ LEGACY AUTH FLOW — DO NOT MODIFY
+// See /docs/architecture_current.md
+
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:provider/provider.dart';
+import 'package:provider/provider.dart' as provider;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/login_screen.dart';
 import 'screens/customer/dashboard_screen.dart';
 import 'screens/auth/pin_setup_screen.dart';
@@ -12,6 +17,7 @@ import 'screens/staff/staff_login_screen.dart';
 import 'utils/constants.dart';
 import 'services/auth_flow_notifier.dart';
 import 'services/role_routing_service.dart';
+import 'state/auth/auth_state_provider.dart' as auth_state;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,14 +46,37 @@ Future<void> main() async {
     anonKey: supabaseAnonKey,
   );
 
-  // One-time session bootstrap - check Supabase session and update AuthFlowNotifier
-  // This happens BEFORE UI renders, ensuring cold-start works correctly
+  // One-time session bootstrap - NO LONGER reads Supabase (now a no-op)
   final authFlowNotifier = AuthFlowNotifier();
   authFlowNotifier.initializeSession();
 
-  // Auth state listener - checks mobile app access ONLY after SIGNED_IN event
-  // This ensures Supabase session is fully attached before checking access
-  // MUST be defined AFTER authFlowNotifier is created so it can access it
+  // Create ProviderContainer to watch Riverpod auth state
+  // This allows us to react to Riverpod auth state changes and update Provider
+  final container = ProviderContainer();
+  
+  // Wire Provider to react to Riverpod auth state (ONE-WAY: Riverpod → Provider)
+  // This replaces the old dual-authority pattern where Provider also read Supabase
+  container.listen(
+    auth_state.authStateProvider,
+    (previous, next) {
+      // Translate Riverpod AuthState to Provider UI state
+      if (next == auth_state.AuthState.authenticated) {
+        debugPrint('RIVERPOD → PROVIDER: Setting authenticated state');
+        authFlowNotifier.setAuthenticated();
+      } else if (next == auth_state.AuthState.unauthenticated) {
+        debugPrint('RIVERPOD → PROVIDER: Setting unauthenticated state');
+        // Use forceLogout() instead of setUnauthenticated() to ensure state reset
+        // This guarantees state is reset even if already unauthenticated
+        authFlowNotifier.forceLogout();
+      }
+    },
+    fireImmediately: true, // Fire on first value to sync initial state
+  );
+
+  // Auth state listener - NO LONGER updates Provider state
+  // Riverpod (supabaseSessionProvider) is now the only reader of Supabase auth
+  // This listener only enforces business rules (mobile app access check)
+  // Auth state is derived from Supabase session via Riverpod providers
   Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
     final event = data.event;
     
@@ -59,31 +88,34 @@ Future<void> main() async {
         debugPrint('AUTH LISTENER: Access check result = $hasAccess');
         
         if (!hasAccess) {
-          // Access denied - logout
+          // Access denied - logout (business rule enforcement)
           debugPrint('AUTH LISTENER: Access denied, signing out');
           await Supabase.instance.client.auth.signOut();
         } else {
-          // Access granted - set authenticated state so AuthGate can route
-          debugPrint('AUTH LISTENER: Access granted, setting authenticated state');
-          authFlowNotifier.setAuthenticated();
+          // Access granted - auth state will be derived by Riverpod from session
+          debugPrint('AUTH LISTENER: Access granted (auth state derived by Riverpod)');
+          // TODO (Sprint 2): Provider will react to Riverpod auth state in later steps
         }
       } catch (e, stackTrace) {
-        // Access denied or error - logout
+        // Access denied or error - logout (business rule enforcement)
         debugPrint('AUTH LISTENER: Exception caught: $e');
         debugPrint('AUTH LISTENER: Stack trace: $stackTrace');
         await Supabase.instance.client.auth.signOut();
       }
     } else if (event == AuthChangeEvent.signedOut) {
-      // Supabase session ended - force logout to reset state
-      debugPrint('AUTH LISTENER: signedOut event detected, forcing logout');
-      authFlowNotifier.forceLogout();
+      // Supabase session ended - auth state will be derived by Riverpod from session
+      debugPrint('AUTH LISTENER: signedOut event detected (auth state derived by Riverpod)');
+      // TODO (Sprint 2): Provider will react to Riverpod auth state in later steps
     }
   });
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: authFlowNotifier,
-      child: const MyApp(),
+    ProviderScope(
+      parent: container, // Use the container that watches auth state
+      child: provider.ChangeNotifierProvider.value(
+        value: authFlowNotifier,
+        child: const MyApp(),
+      ),
     ),
   );
 }
@@ -128,10 +160,6 @@ class _AuthGateState extends State<AuthGate> {
     super.initState();
     debugPrint('🔵 AuthGate.initState: Called');
     
-    // NUCLEAR FIX: Manually listen to force rebuilds when Provider fails
-    final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
-    authFlow.addListener(_forceRebuild);
-    
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkRoleIfNeeded();
     });
@@ -139,21 +167,7 @@ class _AuthGateState extends State<AuthGate> {
   
   @override
   void dispose() {
-    // Remove manual listener
-    try {
-      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
-      authFlow.removeListener(_forceRebuild);
-    } catch (e) {
-      debugPrint('Error removing listener: $e');
-    }
     super.dispose();
-  }
-  
-  void _forceRebuild() {
-    debugPrint('🔥 MANUAL REBUILD TRIGGERED by addListener');
-    if (mounted) {
-      setState(() {});
-    }
   }
 
   @override
@@ -167,7 +181,7 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _checkRoleIfNeeded() async {
-    final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+    final authFlow = provider.Provider.of<AuthFlowNotifier>(context, listen: false);
     
     // Reset state when unauthenticated (logout)
     if (authFlow.state == AuthFlowState.unauthenticated) {
@@ -213,7 +227,7 @@ class _AuthGateState extends State<AuthGate> {
     
     try {
       // ← MOVE Provider.of INSIDE try block
-      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      final authFlow = provider.Provider.of<AuthFlowNotifier>(context, listen: false);
       debugPrint('AuthGate._checkRoleAndRoute: Got authFlow from Provider');
       
       // Access check is done in auth state listener (after SIGNED_IN event)
@@ -322,7 +336,7 @@ class _AuthGateState extends State<AuthGate> {
         debugPrint('AuthGate._checkRoleAndRoute: Sign out also failed - $signOutError');
       }
       
-      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      final authFlow = provider.Provider.of<AuthFlowNotifier>(context, listen: false);
       authFlow.forceLogout();
       
       if (mounted) {
@@ -344,7 +358,7 @@ class _AuthGateState extends State<AuthGate> {
 
   @override
   Widget build(BuildContext context) {
-    final authFlow = Provider.of<AuthFlowNotifier>(context); // ← Use this instead
+    final authFlow = provider.Provider.of<AuthFlowNotifier>(context); // ← Use this instead
     debugPrint('🟢 AuthGate.build() via Provider.of - state = ${authFlow.state}');
     debugPrint('🟢 AuthGate.build() - Instance hashCode = ${authFlow.hashCode}');
     

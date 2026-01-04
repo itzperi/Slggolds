@@ -21,23 +21,15 @@ class AuthFlowNotifier extends ChangeNotifier {
   bool get isFirstTime => _isFirstTime;
   bool get isResetPin => _isResetPin;
 
-  // One-time session bootstrap - checks Supabase session on app start
-  // This is NOT UI code - it's backend glue that updates state
+  // One-time session bootstrap - NO LONGER reads Supabase directly
+  // Supabase session is now read by Riverpod (supabaseSessionProvider)
+  // Auth state is driven by onAuthStateChange listener in main.dart
+  // This method is retained for compatibility but is now a no-op
   void initializeSession() {
-    try {
-      final session = Supabase.instance.client.auth.currentSession;
-      
-      if (session == null) {
-        setUnauthenticated();
-      } else {
-        setAuthenticated();
-      }
-      
-      print('AuthFlowNotifier: Session initialized - state: $_state');
-    } catch (e) {
-      print('AuthFlowNotifier: Error initializing session: $e');
-      setUnauthenticated();
-    }
+    // TODO (Sprint 2): Remove this method entirely once Riverpod migration is complete
+    // Auth state is now derived from Supabase session via Riverpod providers
+    // The onAuthStateChange listener in main.dart will drive state transitions
+    print('AuthFlowNotifier: initializeSession() called (no-op - auth driven by onAuthStateChange listener)');
   }
 
   // OTP verified - user needs to set up PIN

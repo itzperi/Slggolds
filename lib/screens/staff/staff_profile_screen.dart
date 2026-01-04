@@ -411,9 +411,8 @@ class _StaffProfileScreenState extends State<StaffProfileScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              // Get references BEFORE closing dialog (context is still valid)
+              // Get reference BEFORE closing dialog (context is still valid)
               final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
-              final navigator = Navigator.of(context);
               
               Navigator.pop(context); // Close dialog
 
@@ -423,16 +422,9 @@ class _StaffProfileScreenState extends State<StaffProfileScreen> {
               // Logout from Supabase
               await Supabase.instance.client.auth.signOut();
 
-              // Update auth state (using reference, not context)
+              // Update auth state - AuthGate will handle routing declaratively
               authFlow.forceLogout();
-
-              // Navigate to login screen and clear navigation stack
-              navigator.pushAndRemoveUntil(
-                MaterialPageRoute(
-                  builder: (_) => const LoginScreen(),
-                ),
-                (route) => false, // Remove all previous routes
-              );
+              // NO navigation - AuthGate.build() will return LoginScreen based on state
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.danger,

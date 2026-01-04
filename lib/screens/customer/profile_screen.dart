@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/auth_flow_notifier.dart';
 import '../../utils/constants.dart';
 import '../../utils/mock_data.dart';
 import '../../utils/secure_storage_helper.dart';
@@ -666,16 +668,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               // Logout from Supabase
               await Supabase.instance.client.auth.signOut();
 
-              // Navigate to login screen and clear navigation stack
-              if (mounted) {
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const LoginScreen(),
-                  ),
-                  (route) => false, // Remove all previous routes
-                );
-              }
+              // Update auth state - AuthGate will handle routing declaratively
+              final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+              authFlow.forceLogout();
+              // NO navigation - AuthGate.build() will return LoginScreen based on state
             },
             child: Text(
               'Logout',
