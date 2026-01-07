@@ -18,6 +18,7 @@ import 'utils/constants.dart';
 import 'services/auth_flow_notifier.dart';
 import 'services/role_routing_service.dart';
 import 'state/auth/auth_state_provider.dart' as auth_state;
+import 'state/navigation/app_router_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -138,7 +139,15 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const AuthGate(),
+      home: provider.Consumer<AuthFlowNotifier>(
+        builder: (context, authFlow, child) {
+          return Consumer(
+            builder: (_, ref, __) {
+              return ref.watch(appRouterProvider(context));
+            },
+          );
+        },
+      ),
     );
   }
 }
