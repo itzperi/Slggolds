@@ -13,6 +13,7 @@ class AppColors {
   static const inputBackground = Color.fromRGBO(255, 255, 255, 0.05);
   static const success = Color(0xFF10B981);
   static const danger = Color(0xFFEF4444);
+  static const warning = Color(0xFFF59E0B); // Amber/orange for warnings
 }
 
 class AppSpacing {

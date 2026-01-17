@@ -41,6 +41,36 @@ class AuthService {
     }
   }
 
+  // Send OTP to email address
+  Future<void> sendEmailOTP(String email) async {
+    try {
+      await _supabase.auth.signInWithOtp(
+        email: email.trim().toLowerCase(),
+      );
+    } catch (e) {
+      throw Exception('Failed to send email OTP: ${e.toString()}');
+    }
+  }
+
+  // Verify email OTP
+  Future<AuthResponse> verifyEmailOTP(String email, String otp) async {
+    try {
+      final response = await _supabase.auth.verifyOTP(
+        email: email.trim().toLowerCase(),
+        token: otp,
+        type: OtpType.email,
+      );
+
+      if (response.session == null) {
+        throw Exception('Invalid OTP');
+      }
+
+      return response;
+    } catch (e) {
+      throw Exception('Verification failed: ${e.toString()}');
+    }
+  }
+
   // Get current user
   User? getCurrentUser() {
     return _supabase.auth.currentUser;

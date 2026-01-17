@@ -17,6 +17,8 @@ android {
 
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_17.toString()
+        languageVersion = "1.8"
+        apiVersion = "1.8"
     }
 
     defaultConfig {

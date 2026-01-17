@@ -39,7 +39,7 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
   }
 
   Future<void> _handleLogin() async {
-    final staffCode = _staffIdController.text.trim().toUpperCase();
+    final staffCode = _staffIdController.text.trim();
     final password = _passwordController.text.trim();
 
     if (staffCode.isEmpty || password.isEmpty) {
@@ -64,7 +64,8 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
     });
 
     try {
-      // Authenticate using Supabase Auth (resolves staff_code → email internally)
+      // Authenticate using Supabase Auth
+      // Supports both staff_code and username (e.g., "Staff"/"Staff@007")
       await StaffAuthService.signInWithStaffCode(
         staffCode: staffCode,
         password: password,

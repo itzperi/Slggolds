@@ -4,7 +4,9 @@
 // See /docs/architecture_current.md
 
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'dart:ui';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart' as provider;
@@ -14,9 +16,9 @@ import 'screens/customer/dashboard_screen.dart';
 import 'screens/auth/pin_setup_screen.dart';
 import 'screens/staff/staff_dashboard.dart';
 import 'screens/staff/staff_login_screen.dart';
-import 'utils/constants.dart';
 import 'services/auth_flow_notifier.dart';
 import 'services/role_routing_service.dart';
+import 'services/offline_sync_service.dart';
 import 'state/auth/auth_state_provider.dart' as auth_state;
 import 'state/navigation/app_router_provider.dart';
 
@@ -24,6 +26,68 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await dotenv.load();
+
+  // Initialize error tracking (Sentry)
+  // Note: Sentry DSN should be set in environment variables for production
+  // For now, error tracking is disabled until DSN is configured
+  final sentryDsn = dotenv.env['SENTRY_DSN'];
+  
+  if (sentryDsn != null && sentryDsn.isNotEmpty) {
+    try {
+      // Initialize Sentry only if DSN is provided
+      // await SentryFlutter.init(
+      //   (options) {
+      //     options.dsn = sentryDsn;
+      //     options.environment = kDebugMode ? 'development' : 'production';
+      //     options.tracesSampleRate = 0.2; // Capture 20% of transactions
+      //   },
+      //   appRunner: () => _runApp(),
+      // );
+      // For now, we'll use the regular runApp but prepare for Sentry integration
+      debugPrint('Sentry DSN found but Sentry initialization commented out. Enable when ready.');
+    } catch (e) {
+      debugPrint('Failed to initialize Sentry: $e');
+    }
+  }
+
+  // Initialize Flutter error handling
+  FlutterError.onError = (FlutterErrorDetails details) {
+    // Log error to console in debug mode
+    FlutterError.presentError(details);
+    
+    // In production, send to error tracking service
+    if (sentryDsn != null && sentryDsn.isNotEmpty) {
+      // TODO: Uncomment when Sentry is initialized
+      // Sentry.captureException(
+      //   details.exception,
+      //   stackTrace: details.stack,
+      // );
+    }
+    
+    if (kDebugMode) {
+      debugPrint('Flutter Error: ${details.exception}');
+      debugPrint('Stack: ${details.stack}');
+    }
+  };
+
+  // Handle errors from async operations outside Flutter framework
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Platform Error: $error');
+    debugPrint('Stack: $stack');
+    
+    // Send to error tracking service
+    if (sentryDsn != null && sentryDsn.isNotEmpty) {
+      // TODO: Uncomment when Sentry is initialized
+      // Sentry.captureException(error, stackTrace: stack);
+    }
+    
+    return true; // Prevent app crash
+  };
+
+  await _runApp();
+}
+
+Future<void> _runApp() async {
 
   final supabaseUrl = dotenv.env['SUPABASE_URL'];
   final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'];
@@ -46,6 +110,9 @@ Future<void> main() async {
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
   );
+
+  // Start offline sync service (GAP-048) - listens for connectivity and syncs queued payments
+  OfflineSyncService.instance.start();
 
   // One-time session bootstrap - NO LONGER reads Supabase (now a no-op)
   final authFlowNotifier = AuthFlowNotifier();
@@ -109,6 +176,53 @@ Future<void> main() async {
       // TODO (Sprint 2): Provider will react to Riverpod auth state in later steps
     }
   });
+
+  // Set custom error widget builder
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    if (kDebugMode) {
+      // In debug mode, show detailed error
+      return ErrorWidget(details.exception);
+    } else {
+      // In production, show user-friendly error screen
+      return Scaffold(
+        backgroundColor: const Color(0xFF1A0F3E),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 64,
+                  color: Colors.red.shade300,
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Something went wrong',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Please restart the app. If the problem persists, contact support.',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.white70,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+  };
 
   runApp(
     ProviderScope(

@@ -2,13 +2,11 @@
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/constants.dart';
-import '../../mock_data/staff_mock_data.dart';
-import '../../utils/mock_data.dart';
 import '../../services/payment_service.dart';
 import '../../services/role_routing_service.dart';
+import '../../services/offline_payment_queue.dart';
+import 'dart:math';
 
 class CollectPaymentScreen extends StatefulWidget {
   final Map<String, dynamic> customer;
@@ -48,14 +46,11 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
         });
       }
     } catch (e) {
-      // Fallback to mock data rate if database query fails
-      final scheme = widget.customer['scheme'] as String? ?? '';
-      final isGold = scheme.toLowerCase().contains('gold');
+      // GAP-078: Remove hardcoded/mock fallbacks and fail gracefully
+      _showError('Unable to load current market rate. Please try again later.');
       if (mounted) {
         setState(() {
-          _currentMetalRate = isGold 
-              ? MockData.goldPricePerGram.toDouble() 
-              : MockData.silverPricePerGram.toDouble();
+          _currentMetalRate = null;
         });
       }
     }
@@ -122,54 +117,112 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
       final isGold = scheme.toLowerCase().contains('gold');
       final assetType = isGold ? 'gold' : 'silver';
 
-      // Get current market rate (optional - use fallback if not available)
-      double metalRate;
-      try {
-        metalRate = await PaymentService.getCurrentMarketRate(assetType);
-      } catch (e) {
-        // Fallback to mock data rate if database query fails
-        metalRate = isGold 
-            ? MockData.goldPricePerGram.toDouble() 
-            : MockData.silverPricePerGram.toDouble();
-      }
+      // Get current market rate (required - no hardcoded fallback)
+      final metalRate = await PaymentService.getCurrentMarketRate(assetType);
 
       // Get device ID and timestamp
       final deviceId = PaymentService.getDeviceId();
       final clientTimestamp = DateTime.now();
+      // Generate unique ID for idempotency (timestamp + random)
+      final clientPaymentId = '${clientTimestamp.millisecondsSinceEpoch}_${Random().nextInt(10000)}';
 
-      // Insert payment
-      await PaymentService.insertPayment(
-        userSchemeId: userSchemeId,
-        customerId: customerId,
-        staffId: staffProfileId,
-      amount: amount,
-        paymentMethod: _paymentMethod,
-        metalRatePerGram: metalRate,
-        deviceId: deviceId,
-        clientTimestamp: clientTimestamp,
-    );
+      // GAP-047: Try to insert payment online, fallback to offline queue on network error
+      try {
+        await PaymentService.insertPayment(
+          userSchemeId: userSchemeId,
+          customerId: customerId,
+          staffId: staffProfileId,
+          amount: amount,
+          paymentMethod: _paymentMethod,
+          metalRatePerGram: metalRate,
+          deviceId: deviceId,
+          clientTimestamp: clientTimestamp,
+        );
 
-    setState(() => _isLoading = false);
+        setState(() => _isLoading = false);
 
-    // Success message
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              'Payment recorded successfully!',
-            style: GoogleFonts.inter(fontSize: 14.0),
-          ),
-          backgroundColor: AppColors.success,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12.0),
-          ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+        // Success message
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Payment recorded successfully!',
+                style: GoogleFonts.inter(fontSize: 14.0),
+              ),
+              backgroundColor: AppColors.success,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12.0),
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
 
-      // Navigate back
-        Navigator.pop(context, true); // Return true to indicate refresh needed
+          // Navigate back
+          Navigator.pop(context, true); // Return true to indicate refresh needed
+        }
+      } catch (e) {
+        // Check if this is a network error (offline scenario)
+        final errorStr = e.toString().toLowerCase();
+        final isNetworkError = errorStr.contains('network') ||
+            errorStr.contains('connection') ||
+            errorStr.contains('timeout') ||
+            errorStr.contains('socket') ||
+            errorStr.contains('failed host lookup');
+
+        if (isNetworkError) {
+          // GAP-047: Enqueue payment for offline sync
+          try {
+            await OfflinePaymentQueue.enqueue(
+              OfflinePaymentQueueItem(
+                customerId: customerId,
+                userSchemeId: userSchemeId,
+                staffId: staffProfileId,
+                amount: amount,
+                paymentMethod: _paymentMethod,
+                metalRatePerGram: metalRate,
+                deviceId: deviceId,
+                clientTimestamp: clientTimestamp,
+                clientPaymentId: clientPaymentId,
+              ),
+            );
+
+            setState(() => _isLoading = false);
+
+            // Show queued message
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Payment queued. Will sync when online.',
+                    style: GoogleFonts.inter(fontSize: 14.0),
+                  ),
+                  backgroundColor: AppColors.warning,
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12.0),
+                  ),
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+
+              // Navigate back
+              Navigator.pop(context, true);
+            }
+          } catch (queueError) {
+            // Queue full or other queue error
+            setState(() => _isLoading = false);
+            if (queueError is OfflineQueueFullException) {
+              _showError('Offline queue is full. Please try again when online.');
+            } else {
+              _showError('Failed to queue payment: ${queueError.toString()}');
+            }
+          }
+        } else {
+          // Non-network error (validation, RLS, etc.) - show error
+          setState(() => _isLoading = false);
+          _showError('Failed to record payment: ${e.toString()}');
+        }
       }
     } catch (e) {
       setState(() => _isLoading = false);
@@ -528,10 +581,13 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
     final gstAmount = amount * 0.03;
     final netAmount = amount * 0.97;
     
-    // Determine if gold or silver scheme
+    // Determine if gold or silver scheme (for labels only)
     final scheme = widget.customer['scheme'] as String? ?? '';
     final isGold = scheme.toLowerCase().contains('gold');
-    final rate = _currentMetalRate ?? (isGold ? MockData.goldPricePerGram.toDouble() : MockData.silverPricePerGram.toDouble());
+
+    // Use current metal rate if available; otherwise, hide rate/grams section
+    final rate = _currentMetalRate ?? 0.0;
+    if (rate <= 0) return const SizedBox.shrink();
     final metalAdded = netAmount / rate;
 
     return Container(

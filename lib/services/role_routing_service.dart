@@ -2,9 +2,6 @@
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../screens/customer/dashboard_screen.dart';
-import '../screens/staff/staff_dashboard.dart';
-import '../screens/login_screen.dart';
 import '../services/auth_flow_notifier.dart';
 
 class RoleRoutingService {
@@ -73,80 +70,41 @@ class RoleRoutingService {
     }
   }
 
-  /// Check if user has mobile app access
-  /// Returns true if allowed, false if denied
-  /// Throws exception with message if denied
+  /// Check if user has mobile app access using database RPC function (GAP-033)
+  /// Returns true if allowed, throws exception with message if denied
+  /// This enforces database-level access control for admin/office staff
   static Future<bool> checkMobileAppAccess() async {
     try {
-      // STEP 3: Enforce hard auth guard - ensure session is ready
+      // Ensure session is ready
       final session = _supabase.auth.currentSession;
       if (session == null) {
-        // Wait briefly for session to propagate (max 2 seconds)
         await Future.delayed(const Duration(milliseconds: 500));
         final retrySession = _supabase.auth.currentSession;
         if (retrySession == null) {
           throw Exception('Auth session not ready — blocking access check');
         }
       }
+
+      // Call database RPC function check_mobile_app_access()
+      // This function enforces: admin/office staff denied, collection staff/customers allowed
+      final response = await _supabase.rpc('check_mobile_app_access');
       
-      final userId = _supabase.auth.currentUser?.id;
-      // DEBUG: Verify UID is not null (temporary)
-      debugPrint('CHECK MOBILE ACCESS UID = $userId');
-      if (userId == null) {
-        throw Exception('This account does not have mobile app access.');
-      }
-
-      // Fetch role and profile
-      debugPrint('BEFORE PROFILE QUERY');
-      final profileResponse = await _supabase
-          .from('profiles')
-          .select('id, role, active')
-          .eq('user_id', userId)
-          .maybeSingle();
-      debugPrint('AFTER PROFILE QUERY');
-
-      // DEBUG: Verify profile response data
-      debugPrint('PROFILE RESPONSE = ${profileResponse?.toString()}');
-
-      if (profileResponse == null || profileResponse['active'] != true) {
-        throw Exception('This account does not have mobile app access.');
-      }
-
-      final role = profileResponse['role'] as String?;
-      final profileId = profileResponse['id'] as String?;
-
-      if (role == null || profileId == null) {
-        throw Exception('This account does not have mobile app access.');
-      }
-
-      // Admin users cannot access mobile app
-      if (role == 'admin') {
-        throw Exception('This account does not have mobile app access.');
-      }
-
-      // Customers can always access
-      if (role == 'customer') {
+      // RPC returns boolean true if allowed, throws exception if denied
+      if (response == true) {
         return true;
       }
-
-      // Staff must have staff_type='collection'
-      if (role == 'staff') {
-        final staffType = await fetchStaffType(profileId);
-        // DEBUG: Verify staff_type
-        debugPrint('STAFF TYPE = $staffType');
-        if (staffType != 'collection') {
-          throw Exception('This account does not have mobile app access.');
-        }
-        return true;
-      }
-
-      // Unknown role
+      
+      // Should not reach here, but defensive check
       throw Exception('This account does not have mobile app access.');
     } catch (e, stackTrace) {
-      // DEBUG: Log the full exception
       debugPrint('CHECK MOBILE ACCESS EXCEPTION: $e');
       debugPrint('STACK TRACE: $stackTrace');
-      rethrow;
+      
+      // Re-throw with user-friendly message
+      final errorMessage = e.toString().contains('mobile app access')
+          ? e.toString().replaceFirst('Exception: ', '')
+          : 'This account does not have mobile app access. Please use the web dashboard.';
+      throw Exception(errorMessage);
     }
   }
 
