@@ -390,7 +390,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                                       context,
                                       MaterialPageRoute(
                                         builder: (context) => CustomerDetailScreen(
-                                          customerId: customer['id'],
+                                          staffId: widget.staffId,
                                           customer: customer,
                                         ),
                                       ),
@@ -961,10 +961,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => CustomerDetailScreen(
-                                customerId: customer['id'],
-                                customer: customer,
-                              ),
+                                builder: (context) => CustomerDetailScreen(
+                                  staffId: widget.staffId,
+                                  customer: customer,
+                                ),
                             ),
                           ).then((_) => setState(() {}));
                         },
@@ -1121,10 +1121,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => CustomerDetailScreen(
-                                customerId: customer['id'],
-                                customer: customer,
-                              ),
+                                builder: (context) => CustomerDetailScreen(
+                                  staffId: widget.staffId,
+                                  customer: customer,
+                                ),
                             ),
                           ).then((_) => setState(() {}));
                         },

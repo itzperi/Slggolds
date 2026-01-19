@@ -321,7 +321,7 @@ class _TodayTargetDetailScreenState extends State<TodayTargetDetailScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) => CustomerDetailScreen(
-                          customerId: customer['id'],
+                          staffId: widget.staffId,
                           customer: customer,
                         ),
                       ),
@@ -632,7 +632,7 @@ class _TodayTargetDetailScreenState extends State<TodayTargetDetailScreen> {
                           context,
                           MaterialPageRoute(
                             builder: (context) => CustomerDetailScreen(
-                              customerId: customer['id'],
+                              staffId: widget.staffId,
                               customer: customer,
                             ),
                           ),

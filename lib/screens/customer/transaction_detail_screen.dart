@@ -1,12 +1,19 @@
 // lib/screens/customer/transaction_detail_screen.dart
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:pdf/pdf.dart';
+import 'package:share_plus/share_plus.dart';
+
 import '../../utils/constants.dart';
 
 class TransactionDetailScreen extends StatelessWidget {
   final String date;
-  final int amount;
+  final double amount;
   final String status;
   final String? transactionId;
   final String? method;
@@ -38,6 +45,99 @@ class TransactionDetailScreen extends StatelessWidget {
       count++;
     }
     return result;
+  }
+
+  Future<File> _generateReceiptPdf() async {
+    final pdf = pw.Document();
+
+    final gstAmount = amount.toDouble() * 0.03;
+    final netAmount = amount.toDouble() * 0.97;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context context) {
+          return pw.Padding(
+            padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'SLG Thangangal',
+                  style: pw.TextStyle(
+                    fontSize: 22,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  'Payment Receipt',
+                  style: const pw.TextStyle(fontSize: 16),
+                ),
+                pw.SizedBox(height: 16),
+                pw.Divider(),
+                pw.SizedBox(height: 16),
+                pw.Text(
+                  'Amount Paid',
+                  style: const pw.TextStyle(fontSize: 12),
+                ),
+                pw.Text(
+                  '₹${_formatCurrency(amount.toDouble())}',
+                  style: pw.TextStyle(
+                    fontSize: 24,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 16),
+                pw.Text('GST (3%): ₹${_formatCurrency(gstAmount)}'),
+                pw.Text('Net Investment: ₹${_formatCurrency(netAmount)}'),
+                pw.SizedBox(height: 24),
+                pw.Divider(),
+                pw.SizedBox(height: 12),
+                pw.Text('Date: $date'),
+                pw.Text('Status: $status'),
+                if (method != null) pw.Text('Payment Method: $method'),
+                if (scheme != null) pw.Text('Scheme: $scheme'),
+                if (transactionId != null)
+                  pw.Text('Transaction ID: $transactionId'),
+                pw.SizedBox(height: 24),
+                pw.Divider(),
+                pw.SizedBox(height: 12),
+                pw.Text(
+                  'This is a system-generated receipt. Please keep it for your records.',
+                  style: const pw.TextStyle(fontSize: 10),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    final bytes = await pdf.save();
+    final dir = await getTemporaryDirectory();
+    final file = File(
+      '${dir.path}/receipt_${transactionId ?? DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
+    await file.writeAsBytes(bytes, flush: true);
+    return file;
+  }
+
+  Future<void> _downloadReceipt() async {
+    final file = await _generateReceiptPdf();
+    // On mobile, "downloading" is effectively sharing/saving via system sheet.
+    await Share.shareXFiles(
+      [XFile(file.path)],
+      text: 'SLG Thangangal payment receipt',
+    );
+  }
+
+  Future<void> _shareReceipt() async {
+    final file = await _generateReceiptPdf();
+    await Share.shareXFiles(
+      [XFile(file.path)],
+      text: 'SLG Thangangal payment receipt',
+    );
   }
 
   @override
@@ -193,8 +293,8 @@ class TransactionDetailScreen extends StatelessWidget {
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
-                                onPressed: () {
-                                  // TODO: Download receipt
+                                onPressed: () async {
+                                  await _downloadReceipt();
                                 },
                                 icon: const Icon(Icons.download, color: AppColors.primary),
                                 label: Text(
@@ -216,8 +316,8 @@ class TransactionDetailScreen extends StatelessWidget {
                             const SizedBox(width: 12),
                             Expanded(
                               child: ElevatedButton.icon(
-                                onPressed: () {
-                                  // TODO: Share receipt
+                                onPressed: () async {
+                                  await _shareReceipt();
                                 },
                                 icon: const Icon(Icons.share, color: Colors.white),
                                 label: Text(

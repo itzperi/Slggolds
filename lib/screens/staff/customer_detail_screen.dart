@@ -1,193 +1,91 @@
-// lib/screens/staff/customer_detail_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/constants.dart';
-import '../../services/staff_data_service.dart';
-import 'collect_payment_screen.dart';
+import 'record_payment_modal.dart';
 
 class CustomerDetailScreen extends StatefulWidget {
-  final String customerId;
   final Map<String, dynamic> customer;
-
-  const CustomerDetailScreen({
-    super.key,
-    required this.customerId,
-    required this.customer,
-  });
+  final String staffId;
+  const CustomerDetailScreen({super.key, required this.customer, required this.staffId});
 
   @override
   State<CustomerDetailScreen> createState() => _CustomerDetailScreenState();
 }
 
 class _CustomerDetailScreenState extends State<CustomerDetailScreen> {
-  List<Map<String, dynamic>> _paymentHistory = [];
+  List<dynamic> _history = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadPaymentHistory();
+    _loadHistory();
   }
 
-  Future<void> _loadPaymentHistory() async {
-    setState(() => _isLoading = true);
-    try {
-      final history = await StaffDataService.getPaymentHistory(widget.customerId);
-      setState(() {
-        _paymentHistory = history.take(15).toList();
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _callCustomer(String phone) async {
-    final uri = Uri.parse('tel:$phone');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
-    }
+  Future<void> _loadHistory() async {
+    final response = await Supabase.instance.client
+        .from('payments')
+        .select('*')
+        .eq('customer_id', widget.customer['id'])
+        .order('payment_date', ascending: false)
+        .limit(10);
+    if (mounted) setState(() { _history = response; _isLoading = false; });
   }
 
   @override
   Widget build(BuildContext context) {
-    final firstLetter = widget.customer['name'][0].toUpperCase();
-    final last15Payments = _paymentHistory;
-
     return Scaffold(
-      resizeToAvoidBottomInset: true,
-      body: SafeArea(
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                const Color(0xFF2A1454),
-                const Color(0xFF140A33),
-              ],
+      backgroundColor: AppColors.backgroundDarker,
+      body: CustomScrollView(
+        slivers: [
+          _buildSliverAppBar(),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildQuickActions(),
+                  const SizedBox(height: 24),
+                  _buildKYCSection(),
+                  const SizedBox(height: 24),
+                  _buildPaymentSummary(),
+                  const SizedBox(height: 24),
+                  _buildHistoryHeader(),
+                  _isLoading ? const Center(child: CircularProgressIndicator()) : _buildHistoryList(),
+                ],
+              ),
             ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: AppColors.primary,
+        onPressed: () => _showPaymentModal(),
+        icon: const Icon(Icons.add_shopping_cart, color: Colors.black),
+        label: Text('RECORD PAYMENT', style: GoogleFonts.outfit(color: Colors.black, fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+
+  Widget _buildSliverAppBar() {
+    return SliverAppBar(
+      expandedHeight: 200,
+      pinned: true,
+      backgroundColor: AppColors.backgroundDarker,
+      flexibleSpace: FlexibleSpaceBar(
+        background: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(colors: [AppColors.primary.withOpacity(0.5), Colors.black26]),
           ),
           child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                    const SizedBox(width: 8.0),
-                    Expanded(
-                      child: Text(
-                        'Customer Details',
-                        style: GoogleFonts.inter(
-                          fontSize: 20.0,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.phone, color: AppColors.primary),
-                      onPressed: () => _callCustomer(widget.customer['phone']),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Content
-              Expanded(
-                child: SingleChildScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Customer info card
-                      _buildCustomerInfoCard(firstLetter),
-                      const SizedBox(height: 24.0),
-
-                      // Scheme
-                      _buildSectionTitle('SCHEME'),
-                      const SizedBox(height: 12.0),
-                      _buildSchemeCard(),
-                      const SizedBox(height: 24.0),
-
-                      // Payment status
-                      _buildSectionTitle('PAYMENT STATUS'),
-                      const SizedBox(height: 12.0),
-                      _buildPaymentStatusCard(),
-                      const SizedBox(height: 24.0),
-
-                      // Payment history
-                      _buildSectionTitle('PAYMENT HISTORY (Last 15)'),
-                      const SizedBox(height: 12.0),
-                      _buildPaymentHistoryList(last15Payments),
-                      const SizedBox(height: 24.0),
-
-                      // Action buttons
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => CollectPaymentScreen(
-                                      customer: widget.customer,
-                                    ),
-                                  ),
-                                );
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.primary,
-                                padding: const EdgeInsets.symmetric(vertical: 16.0),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12.0),
-                                ),
-                              ),
-                              child: Text(
-                                'Collect Payment',
-                                style: GoogleFonts.inter(
-                                  fontSize: 16.0,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12.0),
-                          OutlinedButton(
-                            onPressed: () => _callCustomer(widget.customer['phone']),
-                            style: OutlinedButton.styleFrom(
-                              side: BorderSide(color: AppColors.primary, width: 1.5),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 24.0,
-                                vertical: 16.0,
-                              ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12.0),
-                              ),
-                            ),
-                            child: Icon(
-                              Icons.phone,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 32.0),
-                    ],
-                  ),
-                ),
-              ),
+              const CircleAvatar(radius: 40, backgroundColor: Colors.white10, child: Icon(Icons.person, size: 40, color: Colors.white38)),
+              const SizedBox(height: 12),
+              Text(widget.customer['name'] ?? 'Unknown', style: GoogleFonts.outfit(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(widget.customer['phone'] ?? '', style: GoogleFonts.inter(color: Colors.white70)),
             ],
           ),
         ),
@@ -195,311 +93,145 @@ class _CustomerDetailScreenState extends State<CustomerDetailScreen> {
     );
   }
 
-  Widget _buildCustomerInfoCard(String firstLetter) {
-    return Container(
-      padding: const EdgeInsets.all(24.0),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(20.0),
-        border: Border.all(
-          color: AppColors.primary.withOpacity(0.3),
-          width: 1.5,
-        ),
-      ),
-      child: Column(
-        children: [
-          Container(
-            width: 80.0,
-            height: 80.0,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.2),
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: AppColors.primary,
-                width: 3.0,
-              ),
-            ),
-            child: Center(
-              child: Text(
-                firstLetter,
-                style: GoogleFonts.inter(
-                  fontSize: 32.0,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.primary,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16.0),
-          Text(
-            widget.customer['name'] ?? 'Unknown',
-            style: GoogleFonts.inter(
-              fontSize: 22.0,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 8.0),
-          Text(
-            widget.customer['phone'] ?? 'N/A',
-            style: GoogleFonts.inter(
-              fontSize: 16.0,
-              color: Colors.white.withOpacity(0.7),
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 8.0),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Text(
-              widget.customer['address'] ?? 'Address not available',
-              style: GoogleFonts.inter(
-                fontSize: 14.0,
-                color: Colors.white.withOpacity(0.6),
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(height: 12.0),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(20.0),
-            ),
-            child: Text(
-              'Customer ID: ${widget.customer['customerId'] ?? widget.customer['id'] ?? 'N/A'}',
-              style: GoogleFonts.inter(
-                fontSize: 12.0,
-                color: AppColors.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
+  Widget _buildQuickActions() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _actionBtn(Icons.call, 'Call', Colors.blue),
+        _actionBtn(Icons.chat, 'WhatsApp', Colors.green),
+        _actionBtn(Icons.map, 'Location', Colors.red),
+        _actionBtn(Icons.note_add, 'Note', Colors.amber),
+      ],
     );
   }
 
-  Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: GoogleFonts.inter(
-        fontSize: 14.0,
-        fontWeight: FontWeight.w700,
-        color: AppColors.primary,
-        letterSpacing: 1.2,
-      ),
+  Widget _actionBtn(IconData icon, String label, Color color) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
+          child: Icon(icon, color: color, size: 24),
+        ),
+        const SizedBox(height: 4),
+        Text(label, style: GoogleFonts.inter(fontSize: 11, color: Colors.white54)),
+      ],
     );
   }
 
-  Widget _buildSchemeCard() {
-    final minAmount = widget.customer['minAmount'] as double;
-    final maxAmount = widget.customer['maxAmount'] as double;
-    
+  Widget _buildKYCSection() {
     return Container(
-      padding: const EdgeInsets.all(20.0),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(16.0),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1.0,
-        ),
-      ),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(color: AppColors.backgroundLighter, borderRadius: BorderRadius.circular(24)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildInfoRow('Scheme', widget.customer['scheme'] ?? 'N/A'),
-          _buildInfoRow('Frequency', '${widget.customer['frequency'] ?? 'N/A'} Payment'),
-          _buildInfoRow('Range', '₹${_formatCurrency(minAmount)} - ₹${_formatCurrency(maxAmount)}'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('KYC INFO', style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              const Icon(Icons.verified, color: AppColors.success, size: 18),
+            ],
+          ),
+          const Divider(color: Colors.white10, height: 24),
+          _kycItem('Address', '123, Anna Salai, Nagercoil'),
+          _kycItem('PAN Card', 'ABCDE****F'),
         ],
       ),
     );
   }
 
-  Widget _buildPaymentStatusCard() {
-    final totalPayments = widget.customer['totalPayments'] as int;
-    final missedPayments = widget.customer['missedPayments'] as int;
-    
-    return Container(
-      padding: const EdgeInsets.all(20.0),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(16.0),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1.0,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildInfoRow('Total Payments', totalPayments.toString()),
-          _buildInfoRow('Missed Payments', missedPayments.toString()),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
+  Widget _kycItem(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0),
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
+        Text(value, style: GoogleFonts.inter(fontSize: 14, color: Colors.white, fontWeight: FontWeight.w500)),
+      ]),
+    );
+  }
+
+  Widget _buildPaymentSummary() {
+    return Row(
+      children: [
+        Expanded(child: _summaryCard('NEXT DUE', '₹${widget.customer['next_due_amount']}', AppColors.primary)),
+        const SizedBox(width: 12),
+        Expanded(child: _summaryCard('PENDING', '₹${widget.customer['total_pending_amount']}', AppColors.danger)),
+      ],
+    );
+  }
+
+  Widget _summaryCard(String label, String val, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: AppColors.backgroundLighter, borderRadius: BorderRadius.circular(20)),
+      child: Column(children: [
+        Text(label, style: GoogleFonts.inter(fontSize: 11, color: Colors.white38, fontWeight: FontWeight.bold)),
+        Text(val, style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+      ]),
+    );
+  }
+
+  Widget _buildHistoryHeader() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text('PAYMENT HISTORY', style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+    );
+  }
+
+  Widget _buildHistoryList() {
+    if (_history.isEmpty) return const Center(child: Text('No payments found', style: TextStyle(color: Colors.white24)));
+    return Column(
+      children: _history.map((p) => _historyItem(p)).toList(),
+    );
+  }
+
+  Widget _historyItem(Map<String, dynamic> p) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: Colors.white.withOpacity(0.02), borderRadius: BorderRadius.circular(12)),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Flexible(
-            flex: 2,
-            child: Text(
-              label,
-              style: GoogleFonts.inter(
-                fontSize: 14.0,
-                color: Colors.white.withOpacity(0.7),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8.0),
-          Flexible(
-            flex: 3,
-            child: Text(
-              value,
-              style: GoogleFonts.inter(
-                fontSize: 14.0,
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-              ),
-              textAlign: TextAlign.right,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Receipt: ${p['receipt_number']}', style: GoogleFonts.inter(fontSize: 13, color: Colors.white)),
+            Text(p['payment_date'], style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
+          ]),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text('₹${p['amount']}', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.primary)),
+            Text('${p['metal_grams_added']}g', style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
+          ]),
         ],
       ),
     );
   }
 
-  Widget _buildPaymentHistoryList(List<Map<String, dynamic>> payments) {
-    if (payments.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(40.0),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(16.0),
-        ),
-        child: Center(
-          child: Text(
-            'No payment history',
-            style: GoogleFonts.inter(
-              fontSize: 14.0,
-              color: Colors.white.withOpacity(0.5),
-            ),
-          ),
-        ),
-      );
+  void _showPaymentModal() async {
+    // We need user_scheme_id. In a real app we'd fetch this from the customer object or a quick query.
+    // Fetching user_scheme_id for this customer
+    final res = await Supabase.instance.client.from('user_schemes').select('id').eq('customer_id', widget.customer['id']).eq('status', 'active').maybeSingle();
+    
+    if (res == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No active scheme found')));
+      return;
     }
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(16.0),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1.0,
-        ),
-      ),
-      child: Column(
-        children: payments.asMap().entries.map((entry) {
-          final index = entry.key;
-          final payment = entry.value;
-          final isLast = index == payments.length - 1;
+    if (!mounted) return;
 
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  children: [
-                    Icon(
-                      payment['status'] == 'paid'
-                          ? Icons.check_circle
-                          : Icons.cancel,
-                      color: payment['status'] == 'paid'
-                          ? AppColors.success
-                          : AppColors.danger,
-                      size: 20.0,
-                    ),
-                    const SizedBox(width: 12.0),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _formatShortDate(payment['date']),
-                            style: GoogleFonts.inter(
-                              fontSize: 14.0,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                            ),
-                          ),
-                          if (payment['status'] == 'paid')
-                            Text(
-                              '₹${_formatCurrency(payment['amount'] as double)} • ${_formatMethod(payment['method'])}',
-                              style: GoogleFonts.inter(
-                                fontSize: 12.0,
-                                color: Colors.white.withOpacity(0.6),
-                              ),
-                            )
-                          else
-                            Text(
-                              'Missed',
-                              style: GoogleFonts.inter(
-                                fontSize: 12.0,
-                                color: AppColors.danger,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (!isLast)
-                Divider(
-                  height: 1.0,
-                  color: Colors.white.withOpacity(0.1),
-                ),
-            ],
-          );
-        }).toList(),
+    final result = await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => RecordPaymentModal(
+        customer: widget.customer,
+        staffId: widget.staffId,
+        userSchemeId: res['id'],
       ),
     );
-  }
 
-  String _formatCurrency(double amount) {
-    return amount.toStringAsFixed(0).replaceAllMapped(
-          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-          (Match m) => '${m[1]},',
-        );
-  }
-
-  String _formatShortDate(String dateStr) {
-    try {
-      final date = DateTime.parse(dateStr);
-      return DateFormat('MMM d').format(date);
-    } catch (e) {
-      return dateStr;
+    if (result == true) {
+      _loadHistory();
     }
-  }
-
-  String _formatMethod(String method) {
-    if (method == 'cash') return 'Cash';
-    if (method == 'upi') return 'UPI';
-    return method.toUpperCase();
   }
 }

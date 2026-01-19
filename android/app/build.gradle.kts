@@ -17,8 +17,14 @@ android {
 
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_17.toString()
-        languageVersion = "1.8"
-        apiVersion = "1.8"
+    }
+
+    // Configure Kotlin compiler options for all variants
+    kotlin {
+        compilerOptions {
+            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
+            apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
+        }
     }
 
     defaultConfig {

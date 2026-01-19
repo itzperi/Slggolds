@@ -1,12 +1,15 @@
 // lib/screens/staff/collect_payment_screen.dart
 
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:lottie/lottie.dart';
+
 import '../../utils/constants.dart';
 import '../../services/payment_service.dart';
 import '../../services/role_routing_service.dart';
 import '../../services/offline_payment_queue.dart';
-import 'dart:math';
 
 class CollectPaymentScreen extends StatefulWidget {
   final Map<String, dynamic> customer;
@@ -94,14 +97,12 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
     try {
       // Get current staff profile ID
       final staffProfileId = await RoleRoutingService.getCurrentProfileId();
-      print('CollectPaymentScreen._onPaymentDone: staffProfileId = $staffProfileId');
       if (staffProfileId == null) {
         throw Exception('Staff profile not found');
       }
 
       // Get customer UUID from database
       final customerId = await PaymentService.getCustomerIdFromData(widget.customer);
-      print('CollectPaymentScreen._onPaymentDone: customerId = $customerId');
       if (customerId == null) {
         throw Exception('Customer not found in database');
       }
@@ -141,24 +142,10 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
 
         setState(() => _isLoading = false);
 
-        // Success message
+        // Success animation + message
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Payment recorded successfully!',
-                style: GoogleFonts.inter(fontSize: 14.0),
-              ),
-              backgroundColor: AppColors.success,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12.0),
-              ),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-
-          // Navigate back
+          await _showSuccessAnimation('Payment recorded successfully!');
+          if (!mounted) return;
           Navigator.pop(context, true); // Return true to indicate refresh needed
         }
       } catch (e) {
@@ -244,6 +231,51 @@ class _CollectPaymentScreenState extends State<CollectPaymentScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _showSuccessAnimation(String message) async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return Center(
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 120,
+                  width: 120,
+                  child: Lottie.asset(
+                    'assets/lottie/payment_success.json',
+                    repeat: false,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(
+                    color: Colors.white,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    await Future.delayed(const Duration(milliseconds: 1400));
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
   }
 
   @override

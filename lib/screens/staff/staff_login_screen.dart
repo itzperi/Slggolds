@@ -1,33 +1,45 @@
 // lib/screens/staff/staff_login_screen.dart
 
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../../utils/constants.dart';
 import '../../utils/secure_storage_helper.dart';
 import '../../services/staff_auth_service.dart';
 import '../../services/auth_flow_notifier.dart';
-import 'package:provider/provider.dart';
+import '../../utils/shake_widget.dart';
 
-class StaffLoginScreen extends StatefulWidget {
+class StaffLoginScreen extends ConsumerStatefulWidget {
   const StaffLoginScreen({super.key});
 
   @override
-  State<StaffLoginScreen> createState() => _StaffLoginScreenState();
+  ConsumerState<StaffLoginScreen> createState() => _StaffLoginScreenState();
 }
 
-class _StaffLoginScreenState extends State<StaffLoginScreen> {
+class _StaffLoginScreenState extends ConsumerState<StaffLoginScreen> {
   final _staffIdController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _staffIdFocusNode = FocusNode();
+  final _passwordFocusNode = FocusNode();
+
+  bool _obscurePassword = true;
+  bool _isLoading = false;
+  bool _isStaffIdFocused = false;
+  bool _isPasswordFocused = false;
+  final GlobalKey<SineShakeWidgetState> _shakeKey = GlobalKey<SineShakeWidgetState>();
 
   @override
   void initState() {
     super.initState();
-    debugPrint('StaffLoginScreen: initState called - screen is being built');
+    _staffIdFocusNode.addListener(() {
+      setState(() => _isStaffIdFocused = _staffIdFocusNode.hasFocus);
+    });
+    _passwordFocusNode.addListener(() {
+      setState(() => _isPasswordFocused = _passwordFocusNode.hasFocus);
+    });
   }
-  final _staffIdFocusNode = FocusNode();
-  final _passwordFocusNode = FocusNode();
-  bool _obscurePassword = true;
-  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -39,14 +51,14 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
   }
 
   Future<void> _handleLogin() async {
-    final staffCode = _staffIdController.text.trim();
+    final email = _staffIdController.text.trim();
     final password = _passwordController.text.trim();
 
-    if (staffCode.isEmpty || password.isEmpty) {
+    if (email.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Please enter Staff ID and Password',
+            'Please enter Email and Password',
             style: GoogleFonts.inter(fontSize: 14.0),
           ),
           backgroundColor: AppColors.danger,
@@ -64,37 +76,36 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
     });
 
     try {
-      // Authenticate using Supabase Auth
-      // Supports both staff_code and username (e.g., "Staff"/"Staff@007")
+      // Use StaffAuthService to handle username/code mapping
       await StaffAuthService.signInWithStaffCode(
-        staffCode: staffCode,
+        staffCode: email,
         password: password,
       );
 
-      // Save staff code for reference (not used for auth)
-      await SecureStorageHelper.saveStaffId(staffCode);
-
-      // Supabase session is now set
-      // AuthGate will detect session and route via RoleRoutingService
-      
       if (mounted) {
+        // Clear navigation stack to remove login screen and reveal dashboard
+        Navigator.of(context).popUntil((route) => route.isFirst);
+        
+        // Explicitly set authenticated to trigger dashboard navigation
+        ref.read(authFlowProvider).setAuthenticated();
+
         setState(() {
           _isLoading = false;
         });
-        
-        // Auth state listener will call setAuthenticated() after access check
-        // AuthGate will detect state change and route automatically - no need to pop
-        debugPrint('🔵 StaffLoginScreen: Login successful. Auth listener will set authenticated state and AuthGate will route.');
+        debugPrint('🔵 StaffLoginScreen: Login successful for $email');
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _isLoading = false;
         });
+        _shakeKey.currentState?.shake();
+
+        // Show error message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Invalid Staff ID or Password',
+              'Invalid email or password',
               style: GoogleFonts.inter(fontSize: 14.0),
             ),
             backgroundColor: AppColors.danger,
@@ -102,7 +113,6 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
             ),
-            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -111,243 +121,280 @@ class _StaffLoginScreenState extends State<StaffLoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    final screenWidth = MediaQuery.of(context).size.width;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF140A33), // Purple background
+      backgroundColor: AppColors.backgroundDarker,
       resizeToAvoidBottomInset: true,
       body: SafeArea(
-        child: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Color(0xFF2A1454),
-                Color(0xFF140A33),
-              ],
+        child: Column(
+          children: [
+            // Back button at top left
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
+                  onPressed: () {
+                    ref.read(authFlowProvider).forceLogout();
+                  },
+                ),
+              ),
             ),
-          ),
-          child: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Back button
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    onPressed: () {
-                      Provider.of<AuthFlowNotifier>(context, listen: false).forceLogout();
-                    },
-                  ),
-                ),
-
-                const SizedBox(height: 40.0),
-
-                // SLG Logo placeholder
-                Container(
-                  height: 100.0,
-                  width: 100.0,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20.0),
-                    border: Border.all(
-                      color: AppColors.primary.withOpacity(0.3),
-                      width: 2.0,
-                    ),
-                  ),
-                  child: Center(
-                    child: Text(
-                      'SLG',
-                      style: GoogleFonts.inter(
-                        fontSize: 32.0,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 40.0),
-
-                // Title
-                Text(
-                  'Staff Login',
-                  style: GoogleFonts.inter(
-                    fontSize: 28.0,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.primary,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-
-                const SizedBox(height: 8.0),
-
-                // Subtitle
-                Text(
-                  'Access your work portal',
-                  style: GoogleFonts.inter(
-                    fontSize: 16.0,
-                    color: Colors.white.withOpacity(0.7),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-
-                const SizedBox(height: 48.0),
-
-                // Staff ID field
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.1),
-                      width: 1.0,
-                    ),
-                  ),
-                  child: TextField(
-                    controller: _staffIdController,
-                    focusNode: _staffIdFocusNode,
-                    style: GoogleFonts.inter(
-                      fontSize: 16.0,
-                      color: Colors.white,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Staff ID',
-                      hintStyle: GoogleFonts.inter(
-                        color: Colors.white.withOpacity(0.5),
-                      ),
-                      prefixIcon: Icon(
-                        Icons.badge_outlined,
-                        color: AppColors.primary,
-                      ),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 20.0,
-                        vertical: 16.0,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20.0),
-
-                // Password field
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.1),
-                      width: 1.0,
-                    ),
-                  ),
-                  child: TextField(
-                    controller: _passwordController,
-                    focusNode: _passwordFocusNode,
-                    obscureText: _obscurePassword,
-                    style: GoogleFonts.inter(
-                      fontSize: 16.0,
-                      color: Colors.white,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Password',
-                      hintStyle: GoogleFonts.inter(
-                        color: Colors.white.withOpacity(0.5),
-                      ),
-                      prefixIcon: Icon(
-                        Icons.lock_outline,
-                        color: AppColors.primary,
-                      ),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined,
-                          color: Colors.white.withOpacity(0.7),
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _obscurePassword = !_obscurePassword;
-                          });
-                        },
-                      ),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 20.0,
-                        vertical: 16.0,
-                      ),
-                    ),
-                    onSubmitted: (_) => _handleLogin(),
-                  ),
-                ),
-
-                const SizedBox(height: 32.0),
-
-                // Login button
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _handleLogin,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      padding: const EdgeInsets.symmetric(vertical: 16.0),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12.0),
-                      ),
-                      elevation: 2.0,
-                    ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            height: 20.0,
-                            width: 20.0,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.0,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            Expanded(
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.08),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // LOGO (BIGGER SIZE matching LoginScreen)
+                    Center(
+                      child: Container(
+                        width: screenWidth * 0.40,
+                        height: screenWidth * 0.40,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: AppColors.primary.withOpacity(0.05),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primary.withOpacity(0.2),
+                              blurRadius: 30,
+                              spreadRadius: 5,
                             ),
-                          )
-                        : Text(
-                            'Login',
-                            style: GoogleFonts.inter(
-                              fontSize: 16.0,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
+                          ],
+                        ),
+                        child: Center(
+                          child: Icon(
+                            Icons.admin_panel_settings_rounded,
+                            size: screenWidth * 0.2,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    SizedBox(height: screenHeight * 0.03),
+                    
+                    // MAIN HEADING
+                    Column(
+                      children: [
+                        Text(
+                          'SLG',
+                          style: GoogleFonts.playfairDisplay(
+                            fontSize: 40.0,
+                            fontWeight: FontWeight.bold,
+                            color: const Color(0xFFD4AF37),
+                            letterSpacing: 8.0,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        Text(
+                          'GOLDS',
+                          style: GoogleFonts.playfairDisplay(
+                            fontSize: 40.0,
+                            fontWeight: FontWeight.bold,
+                            color: const Color(0xFFD4AF37),
+                            letterSpacing: 8.0,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+
+                    SizedBox(height: screenHeight * 0.01),
+                    Text(
+                      'Staff Portal Access',
+                      style: GoogleFonts.inter(
+                        fontSize: 16.0,
+                        fontWeight: FontWeight.w300,
+                        color: const Color(0xFF9CA3AF),
+                        letterSpacing: 0.2,
+                        fontStyle: FontStyle.italic,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 2,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(2),
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+
+                    SizedBox(height: screenHeight * 0.05),
+
+                    SineShakeWidget(
+                      key: _shakeKey,
+                      child: Column(
+                        children: [
+                          // STAFF ID INPUT
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: AppColors.inputBackground,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: _isStaffIdFocused ? AppColors.primaryLight : AppColors.primary,
+                                width: _isStaffIdFocused ? 2 : 1.5,
+                              ),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 18),
+                            child: Row(
+                              children: [
+                                Icon(Icons.email_outlined, color: AppColors.primary, size: 20),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _staffIdController,
+                                    focusNode: _staffIdFocusNode,
+                                    style: GoogleFonts.inter(color: Colors.white, fontSize: 16),
+                                    decoration: InputDecoration(
+                                      hintText: 'staff@slggolds.com',
+                                      hintStyle: GoogleFonts.inter(color: const Color(0xFF6B7280), fontSize: 16),
+                                      border: InputBorder.none,
+                                    ),
+                                    keyboardType: TextInputType.emailAddress,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                  ),
-                ),
 
-                const SizedBox(height: 16.0),
+                          const SizedBox(height: 20),
 
-                // Forgot password
-                TextButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Contact admin to reset password',
-                          style: GoogleFonts.inter(fontSize: 14.0),
+                          // PASSWORD INPUT
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: AppColors.inputBackground,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: _isPasswordFocused ? AppColors.primaryLight : AppColors.primary,
+                                width: _isPasswordFocused ? 2 : 1.5,
+                              ),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 18),
+                            child: Row(
+                              children: [
+                                Icon(Icons.lock_outline_rounded, color: AppColors.primary, size: 20),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _passwordController,
+                                    focusNode: _passwordFocusNode,
+                                    obscureText: _obscurePassword,
+                                    style: GoogleFonts.inter(color: Colors.white, fontSize: 16),
+                                    decoration: InputDecoration(
+                                      hintText: 'Staff@123',
+                                      hintStyle: GoogleFonts.inter(color: const Color(0xFF6B7280), fontSize: 16),
+                                      border: InputBorder.none,
+                                    ),
+                                    onSubmitted: (_) => _handleLogin(),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: Icon(
+                                    _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                    color: Colors.white.withOpacity(0.5),
+                                    size: 20,
+                                  ),
+                                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    SizedBox(height: screenHeight * 0.04),
+
+                    // LOGIN BUTTON (Matching "Get OTP" style)
+                    Container(
+                      height: 60,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [AppColors.primaryLight, AppColors.primary],
                         ),
-                        backgroundColor: AppColors.textSecondary,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12.0),
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.3),
+                            blurRadius: 16,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: _isLoading ? null : _handleLogin,
+                          borderRadius: BorderRadius.circular(14),
+                          child: Center(
+                            child: _isLoading
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF0A0A0A)),
+                                    ),
+                                  )
+                                : Text(
+                                    'Access Portal',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w600,
+                                      color: const Color(0xFF0A0A0A),
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                          ),
                         ),
                       ),
-                    );
-                  },
-                  child: Text(
-                    'Forgot Password?',
-                    style: GoogleFonts.inter(
-                      fontSize: 14,
-                      color: Colors.white.withOpacity(0.7),
                     ),
-                  ),
+
+                    const SizedBox(height: 24),
+
+                    // FORGOT PASSWORD
+                    TextButton(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: const Text('Please contact system administrator to reset your password.'),
+                            backgroundColor: AppColors.textSecondary,
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        );
+                      },
+                      child: Text(
+                        'Forgot Password?',
+                        style: GoogleFonts.inter(
+                          color: AppColors.primary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: screenHeight * 0.05),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

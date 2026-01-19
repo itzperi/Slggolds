@@ -29,7 +29,8 @@ class BiometricHelper {
         localizedReason: 'Please authenticate to login',
         options: const AuthenticationOptions(
           stickyAuth: true,
-          biometricOnly: true,
+          biometricOnly: false, // Allow PIN/Pattern fallback if face/fingerprint fails
+          useErrorDialogs: true,
         ),
       );
     } on PlatformException catch (e) {

@@ -91,7 +91,7 @@ END $$;
 -- All authenticated users (customer, staff, admin) have a profile
 CREATE TABLE IF NOT EXISTS profiles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
     role user_role NOT NULL DEFAULT 'customer',
     phone TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     -- Offline sync support
     device_id TEXT,
     client_timestamp TIMESTAMPTZ,
+    pin_hash TEXT, -- SHA-256 hashed 4-digit PIN
     -- Constraints
     CONSTRAINT profiles_phone_format CHECK (phone ~ '^\+?[1-9]\d{1,14}$'),
     CONSTRAINT profiles_name_length CHECK (char_length(name) >= 2 AND char_length(name) <= 100),
@@ -1389,3 +1390,56 @@ END $$;
 -- END OF SCHEMA
 -- ============================================================================
 
+
+-- ============================================================================
+-- MOBILE AUTHENTICATION RPCs
+-- ============================================================================
+
+-- verify_pin(phone, pin_hash_param)
+-- Securely validates a user's PIN from the mobile app
+-- Returns table with success and role columns
+DROP FUNCTION IF EXISTS verify_pin(TEXT, TEXT);
+CREATE OR REPLACE FUNCTION verify_pin(phone_param TEXT, pin_param TEXT)
+RETURNS TABLE(success BOOLEAN, role user_role) AS $$
+DECLARE
+    profile_record RECORD;
+BEGIN
+    -- Find profile by phone number
+    SELECT p.pin_hash, p.role INTO profile_record
+    FROM profiles p
+    WHERE p.phone = phone_param OR p.phone = '+91' || phone_param
+    LIMIT 1;
+    
+    -- Check if profile exists and PIN matches
+    IF profile_record IS NOT NULL AND profile_record.pin_hash = pin_param THEN
+        -- PIN is correct
+        RETURN QUERY SELECT true AS success, profile_record.role AS role;
+    ELSE
+        -- PIN is incorrect or profile not found
+        RETURN QUERY SELECT false AS success, NULL::user_role AS role;
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- upsert_profile_from_mobile(phone, pin_hash)
+-- Allows mobile app to save/register profile info
+-- Note: In production, this should be gated or linked to Auth session
+CREATE OR REPLACE FUNCTION upsert_profile_from_mobile(
+    phone_param TEXT, 
+    pin_hash_param TEXT,
+    name_param TEXT DEFAULT 'User'
+)
+RETURNS VOID AS $$
+BEGIN
+    INSERT INTO profiles (phone, pin_hash, name, role)
+    VALUES (
+        CASE WHEN phone_param LIKE '+%' THEN phone_param ELSE '+91' || phone_param END,
+        pin_hash_param,
+        name_param,
+        'customer'
+    )
+    ON CONFLICT (phone) DO UPDATE
+    SET pin_hash = EXCLUDED.pin_hash,
+        updated_at = NOW();
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

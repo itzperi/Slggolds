@@ -4,8 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../../services/auth_flow_notifier.dart';
 import '../../utils/constants.dart';
 import '../../utils/mock_data.dart';
@@ -18,14 +19,14 @@ import '../profile/privacy_policy_screen.dart';
 import 'account_information_page.dart';
 import 'withdrawal_list_screen.dart';
 
-class ProfileScreen extends StatefulWidget {
+class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
   @override
-  State<ProfileScreen> createState() => _ProfileScreenState();
+  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> {
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   File? _avatarImage;
   bool _isUploading = false;
   bool _isRefreshing = false;
@@ -669,7 +670,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               await Supabase.instance.client.auth.signOut();
 
               // Update auth state - AuthGate will handle routing declaratively
-              final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+              final authFlow = ref.read(authFlowProvider);
               authFlow.forceLogout();
               // NO navigation - AuthGate.build() will return LoginScreen based on state
             },

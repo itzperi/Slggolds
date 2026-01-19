@@ -433,7 +433,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
               MaterialPageRoute(
                 builder: (context) => TransactionDetailScreen(
                   date: formattedDate,
-                  amount: transaction['amount'] as int,
+                  amount: (transaction['amount'] as num).toDouble(),
                   status: status,
                   transactionId: transaction['receiptId'] as String?,
                   method: 'UPI',

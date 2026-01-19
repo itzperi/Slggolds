@@ -41,14 +41,7 @@ class RoleRoutingService {
   /// Returns 'collection' or 'office', null if not staff or missing
   static Future<String?> fetchStaffType(String profileId) async {
     try {
-      // STEP 2: Add diagnostics before query
       final session = _supabase.auth.currentSession;
-      final user = _supabase.auth.currentUser;
-      
-      debugPrint('SESSION BEFORE staff_metadata QUERY = $session');
-      debugPrint('USER BEFORE staff_metadata QUERY = $user');
-      debugPrint('SUPABASE CLIENT HASH = ${_supabase.hashCode}');
-      
       // STEP 3: Enforce hard auth guard
       if (session == null) {
         throw Exception('Auth session not ready — blocking staff_metadata access');
@@ -59,9 +52,6 @@ class RoleRoutingService {
           .select('staff_type')
           .eq('profile_id', profileId)
           .maybeSingle();
-
-      // DEBUG: Verify staff_metadata response
-      debugPrint('STAFF_METADATA RESPONSE = ${response?.toString()}');
 
       return response?['staff_type'] as String?;
     } catch (e) {

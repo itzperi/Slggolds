@@ -3,8 +3,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../../utils/constants.dart';
 import '../../services/staff_data_service.dart';
 import '../../services/auth_flow_notifier.dart';
@@ -14,16 +15,16 @@ import 'staff_settings_screen.dart';
 import '../profile/help_support_screen.dart';
 import '../login_screen.dart';
 
-class StaffProfileScreen extends StatefulWidget {
+class StaffProfileScreen extends ConsumerStatefulWidget {
   final String staffId;
 
   const StaffProfileScreen({super.key, required this.staffId});
 
   @override
-  State<StaffProfileScreen> createState() => _StaffProfileScreenState();
+  ConsumerState<StaffProfileScreen> createState() => _StaffProfileScreenState();
 }
 
-class _StaffProfileScreenState extends State<StaffProfileScreen> {
+class _StaffProfileScreenState extends ConsumerState<StaffProfileScreen> {
   Map<String, dynamic>? _staffInfo;
   bool _isLoading = true;
   bool _hasError = false;
@@ -412,7 +413,7 @@ class _StaffProfileScreenState extends State<StaffProfileScreen> {
           ElevatedButton(
             onPressed: () async {
               // Get reference BEFORE closing dialog (context is still valid)
-              final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+              final authFlow = ref.read(authFlowProvider);
               
               Navigator.pop(context); // Close dialog
 

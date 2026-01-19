@@ -2,8 +2,11 @@
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:lottie/lottie.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../utils/constants.dart';
+import '../../widgets/success_animation_widget.dart';
 
 class WithdrawalScreen extends StatefulWidget {
   final Map<String, dynamic> scheme;
@@ -219,28 +222,12 @@ class _WithdrawalScreenState extends State<WithdrawalScreen> {
       };
 
       // Insert withdrawal request
-      await supabase
-          .from('withdrawals')
-          .insert(withdrawalData);
+      await supabase.from('withdrawals').insert(withdrawalData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Withdrawal request submitted successfully. Pending approval.',
-              style: GoogleFonts.inter(fontSize: 14.0),
-            ),
-            backgroundColor: AppColors.success,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            duration: const Duration(seconds: 3),
-          ),
+        await _showSuccessAnimation(
+          'Withdrawal request submitted successfully.\nPending approval.',
         );
-
-        // Navigate back after short delay
-        await Future.delayed(const Duration(milliseconds: 500));
         if (mounted) {
           Navigator.pop(context);
         }
@@ -632,6 +619,14 @@ class _WithdrawalScreenState extends State<WithdrawalScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _showSuccessAnimation(String message) async {
+    await SuccessAnimationWidget.show(
+      context,
+      message: message,
+      duration: const Duration(seconds: 2),
     );
   }
 }

@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../../utils/secure_storage_helper.dart';
 import '../../utils/constants.dart';
-import 'biometric_setup_screen.dart';
 import 'pin_login_screen.dart';
-import '../customer/dashboard_screen.dart';
 import '../../services/auth_flow_notifier.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-class PinSetupScreen extends StatefulWidget {
+class PinSetupScreen extends ConsumerStatefulWidget {
   final String phoneNumber;
   final bool isFirstTime;
   final bool isReset;
@@ -21,10 +21,10 @@ class PinSetupScreen extends StatefulWidget {
   });
 
   @override
-  State<PinSetupScreen> createState() => _PinSetupScreenState();
+  ConsumerState<PinSetupScreen> createState() => _PinSetupScreenState();
 }
 
-class _PinSetupScreenState extends State<PinSetupScreen> {
+class _PinSetupScreenState extends ConsumerState<PinSetupScreen> {
   String _pin = '';
   String _confirmPin = '';
   bool _isConfirming = false;
@@ -34,28 +34,13 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
   void _onNumberPressed(String number) {
     setState(() {
       _errorMessage = '';
-
       if (!_isConfirming) {
         if (_pin.length < 4) {
           _pin += number;
-          if (_pin.length == 4) {
-            // Move to confirm stage
-            Future.delayed(const Duration(milliseconds: 300), () {
-              if (mounted) {
-                setState(() {
-                  _isConfirming = true;
-                });
-              }
-            });
-          }
         }
       } else {
         if (_confirmPin.length < 4) {
           _confirmPin += number;
-          if (_confirmPin.length == 4) {
-            // Both PINs entered, verify match
-            _verifyAndSavePin();
-          }
         }
       }
     });
@@ -76,6 +61,21 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
     });
   }
 
+  void _onEnterPressed() {
+    if (!_isConfirming) {
+      if (_pin.length == 4) {
+        setState(() {
+          _isConfirming = true;
+          _errorMessage = '';
+        });
+      }
+    } else {
+      if (_confirmPin.length == 4) {
+        _verifyAndSavePin();
+      }
+    }
+  }
+
   Future<void> _verifyAndSavePin() async {
     if (_pin != _confirmPin) {
       setState(() {
@@ -85,16 +85,38 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
       return;
     }
 
-    // PINs match, save
     setState(() => _isLoading = true);
 
     try {
       await SecureStorageHelper.savePin(_pin);
       await SecureStorageHelper.savePhone(widget.phoneNumber);
 
-      // Navigate to biometric setup or dashboard
+      final hashedPin = SecureStorageHelper.hashPin(_pin);
+      try {
+        await Supabase.instance.client.rpc(
+          'upsert_profile_from_mobile',
+          params: {
+            'phone_param': widget.phoneNumber,
+            'pin_hash_param': hashedPin,
+          },
+        );
+        
+        // SYNC: Also set the Auth Password to the PIN to allow "Login with PIN" 
+        // to actually create a session if the token expires.
+        try {
+          await Supabase.instance.client.auth.updateUser(
+            UserAttributes(password: _pin),
+          );
+          debugPrint('Auth password synced with PIN');
+        } catch (pwError) {
+          debugPrint('Password sync failed (non-critical): $pwError');
+        }
+
+      } catch (dbError) {
+        debugPrint('DB PIN SAVE ERROR: $dbError');
+      }
+
       if (widget.isReset) {
-        // From forgot PIN flow, go back to PIN login
         if (mounted) {
           Navigator.pushReplacement(
             context,
@@ -103,20 +125,9 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
             ),
           );
         }
-      } else if (widget.isFirstTime) {
-        // New user, offer biometric
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => BiometricSetupScreen(phoneNumber: widget.phoneNumber),
-            ),
-          );
-        }
       } else {
-        // Go to dashboard via auth flow
         if (mounted) {
-          final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+          final authFlow = ref.read(authFlowProvider);
           authFlow.setAuthenticated();
         }
       }
@@ -152,8 +163,6 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   SizedBox(height: isSmallScreen ? 20 : screenHeight * 0.05),
-
-                  // Logo
                   Center(
                     child: Container(
                       width: isSmallScreen ? screenWidth * 0.25 : screenWidth * 0.3,
@@ -173,10 +182,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 16 : 24),
-
-                  // Title
                   Center(
                     child: Text(
                       _isConfirming ? 'Confirm Your PIN' : 'Set Up Your PIN',
@@ -189,10 +195,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: 8),
-
-                  // Subtitle
                   Center(
                     child: Text(
                       _isConfirming
@@ -207,10 +210,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 24 : 32),
-
-                  // PIN Dots Display
                   Center(
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -218,7 +218,6 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                       children: List.generate(4, (index) {
                         final currentPin = _isConfirming ? _confirmPin : _pin;
                         final isFilled = index < currentPin.length;
-
                         return Container(
                           margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.015),
                           width: isSmallScreen ? screenWidth * 0.13 : screenWidth * 0.15,
@@ -232,15 +231,6 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                               width: 2,
                             ),
                             borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: isFilled
-                                    ? AppColors.primary.withOpacity(0.3)
-                                    : Colors.transparent,
-                                blurRadius: 8,
-                                spreadRadius: 1,
-                              ),
-                            ],
                           ),
                           child: Center(
                             child: Container(
@@ -256,29 +246,20 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                       }),
                     ),
                   ),
-
-                  // Error message
                   if (_errorMessage.isNotEmpty) ...[
                     SizedBox(height: 12),
                     Center(
                       child: Text(
                         _errorMessage,
                         textAlign: TextAlign.center,
-                        style: GoogleFonts.inter(
-                          color: AppColors.danger,
-                          fontSize: 14,
-                        ),
+                        style: GoogleFonts.inter(color: AppColors.danger, fontSize: 14),
                       ),
                     ),
                   ],
-
                   SizedBox(height: isSmallScreen ? 24 : 32),
-
-                  // Number Pad
                   Center(
                     child: _buildNumberPad(screenWidth, isSmallScreen),
                   ),
-
                   SizedBox(height: isSmallScreen ? 16 : 24),
                 ],
               ),
@@ -316,7 +297,10 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              SizedBox(width: buttonSize + spacing),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: spacing / 2),
+                child: _buildActionButton('Enter', buttonSize, _onEnterPressed),
+              ),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: spacing / 2),
                 child: _buildNumberButton('0', buttonSize),
@@ -332,6 +316,38 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
     );
   }
 
+  Widget _buildActionButton(String label, double buttonSize, VoidCallback onTap) {
+    final currentPin = _isConfirming ? _confirmPin : _pin;
+    final isEnabled = currentPin.length == 4 && !_isLoading;
+    return GestureDetector(
+      onTap: isEnabled ? onTap : null,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.4,
+        child: Container(
+          width: buttonSize,
+          height: buttonSize,
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.1),
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.primary.withOpacity(0.5), width: 1.5),
+          ),
+          child: Center(
+            child: _isLoading && label == 'Enter'
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                : Text(
+                    label,
+                    style: GoogleFonts.inter(
+                      color: AppColors.primary,
+                      fontSize: buttonSize * 0.22,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildNumberButton(String number, double buttonSize) {
     return GestureDetector(
       onTap: () => _onNumberPressed(number),
@@ -341,10 +357,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.1),
           shape: BoxShape.circle,
-          border: Border.all(
-            color: Colors.white30,
-            width: 1,
-          ),
+          border: Border.all(color: Colors.white30, width: 1),
         ),
         child: Center(
           child: Text(
@@ -369,23 +382,12 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.1),
           shape: BoxShape.circle,
-          border: Border.all(
-            color: Colors.white30,
-            width: 1,
-          ),
+          border: Border.all(color: Colors.white30, width: 1),
         ),
         child: Center(
-          child: Icon(
-            Icons.backspace_outlined,
-            color: Colors.white,
-            size: buttonSize * 0.35,
-          ),
+          child: Icon(Icons.backspace_outlined, color: Colors.white, size: buttonSize * 0.35),
         ),
       ),
     );
   }
 }
-
-
-
-

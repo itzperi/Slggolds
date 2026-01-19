@@ -1,13 +1,14 @@
-// lib/screens/customer/dashboard_screen.dart
-
-import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'package:flutter/services.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:ui';
 import 'package:intl/intl.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../../utils/constants.dart';
-import '../../utils/mock_data.dart';
+import '../../state/customer/customer_providers.dart';
+import 'package:shimmer/shimmer.dart';
 import 'transaction_detail_screen.dart';
 import 'schemes_screen.dart';
 import 'scheme_detail_screen.dart';
@@ -19,19 +20,20 @@ import 'payment_schedule_screen.dart';
 import 'total_investment_screen.dart';
 import 'transaction_history_screen.dart';
 
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   int _currentIndex = 0;
-  final bool _isLoading = false;
   bool _animationsCompleted = false;
   bool _isRefreshing = false;
-  List<Map<String, dynamic>> _activeSchemes = [];
+  bool _isOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+
 
   @override
   void initState() {
@@ -44,25 +46,191 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       }
     });
+    
+    // Monitor connectivity
+    _initConnectivity();
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
+      if (mounted) {
+        final result = results.isNotEmpty ? results.first : ConnectivityResult.none;
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    });
   }
+  
+  Future<void> _initConnectivity() async {
+    try {
+      final results = await Connectivity().checkConnectivity();
+      final result = results.isNotEmpty ? results.first : ConnectivityResult.none;
+      if (mounted) {
+        setState(() {
+          _isOnline = result != ConnectivityResult.none;
+        });
+      }
+    } catch (_) {
+      // Handle error silently
+    }
+  }
+  
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+
+
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      body: IndexedStack(
-        index: _currentIndex,
-        children: [
-          _buildDashboardContent(),
-          const SchemesScreen(),
-          const ProfileScreen(),
-        ],
-      ),
-      bottomNavigationBar: _buildBottomNavigation(),
+    final profileAsync = ref.watch(customerProfileProvider);
+
+    return profileAsync.when(
+      data: (profile) {
+        if (profile == null) {
+          return const Scaffold(body: Center(child: Text('Profile not found')));
+        }
+        
+        final customerData = profile['customers'] is List 
+            ? profile['customers'][0] 
+            : profile['customers'];
+        final customerId = customerData['id'];
+
+        // Watch dashboard metrics to determine state (loading vs empty vs active)
+        final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+
+        return Scaffold(
+          resizeToAvoidBottomInset: true,
+          body: metricsAsync.when(
+            data: (metrics) {
+              // CHECK IF NEW USER (No schemes)
+              final bool isNewUser = (metrics['schemes_count'] ?? 0) == 0;
+              
+              if (isNewUser) {
+                return _buildEmptyState(profile, customerId);
+              }
+
+              return IndexedStack(
+                index: _currentIndex,
+                children: [
+                  _buildDashboardContent(profile, customerId),
+                  const SchemesScreen(),
+                  const ProfileScreen(),
+                ],
+              );
+            },
+            loading: () => _buildFullShimmerLoading(),
+            error: (err, stack) => Scaffold(body: Center(child: Text('Error: $err'))),
+          ),
+          bottomNavigationBar: _buildBottomNavigation(),
+        );
+      },
+      loading: () => _buildFullShimmerLoading(),
+      error: (err, stack) => Scaffold(body: Center(child: Text('Error: $err'))),
     );
   }
 
-  Widget _buildDashboardContent() {
+  // NEW USER EMPTY STATE (Golden Path)
+  Widget _buildEmptyState(Map<String, dynamic> profile, String customerId) {
+     return SafeArea(
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [const Color(0xFF2A1454), const Color(0xFF140A33)],
+          ),
+        ),
+        child: Column(
+          children: [
+            _buildHeader(profile),
+            Expanded(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Lottie/Image placeholder could go here
+                      Icon(Icons.account_balance_wallet_outlined, size: 80, color: Colors.white24),
+                      const SizedBox(height: 24),
+                      Text(
+                        "Welcome to SLG-GOLDS!",
+                        style: GoogleFonts.outfit(
+                          fontSize: 24, 
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        "Ask your collection staff to enroll you in your first Gold or Silver scheme.",
+                        style: GoogleFonts.inter(
+                          fontSize: 16,
+                          color: Colors.white70,
+                          height: 1.5,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 32),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          // In production: open WhatsApp or Phone
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Open WhatsApp to contact staff')),
+                          );
+                        },
+                        icon: const Icon(Icons.chat_bubble_outline),
+                        label: const Text("Contact Staff"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ); 
+  }
+
+  Widget _buildFullShimmerLoading() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF2A1454),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildShimmerHeader(),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    _buildShimmerHero(),
+                    const SizedBox(height: 16),
+                    _buildShimmerMetrics(),
+                    const SizedBox(height: 16),
+                    _buildShimmerAssets(),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildDashboardContent(Map<String, dynamic> profile, String customerId) {
     return SafeArea(
       child: Container(
         decoration: BoxDecoration(
@@ -96,17 +264,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             // Main content
-            _isLoading
-                ? _buildLoadingState()
-                : Column(
-                    children: [
-                      // HEADER - Top bar with greeting and gold price
-                      _buildHeader(),
+            Column(
+              children: [
+                // HEADER - Top bar with greeting and gold price
+                _buildHeader(profile),
 
                       // MAIN CONTENT - Scrollable with pull-to-refresh
                       Expanded(
                         child: RefreshIndicator(
-                          onRefresh: _refreshDashboard,
+                          onRefresh: () => _refreshDashboard(customerId),
+
                           color: AppColors.primary,
                           backgroundColor: const Color(0xFF2A1454),
                           child: SingleChildScrollView(
@@ -115,26 +282,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                            // HERO SECTION - The Wealth Card
-                            _buildHeroCard(),
+                                // CARD 1 & 2: Main Portfolio Metrics
+                                _buildPortfolioGrid(customerId),
 
-                            // KEY METRICS ROW
-                            _buildKeyMetrics(),
+                                // CARD 3: Next Payment (Urgency indicator)
+                                _buildNextPaymentCard(customerId),
 
-                                // ASSET HOLDINGS GRID
-                                _buildAssetHoldings(),
+                                // CARD 4: Payments Progress
+                                _buildProgressCard(customerId),
 
-                                // PAYMENT CALENDAR
-                                _buildPaymentCalendar(),
-
-                                // RECENT ACTIVITY
-                                _buildRecentActivity(),
+                                // CARD 5: Recent Activity
+                                _buildRecentActivity(customerId),
 
                                 // TRUST INDICATORS
                                 _buildTrustIndicators(),
 
                                 // MY ACTIVE SCHEMES
-                                _buildActiveSchemes(),
+                                _buildActiveSchemes(customerId),
 
                                 // Bottom spacing for navigation bar
                                 const SizedBox(height: 100),
@@ -151,13 +315,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _refreshDashboard() async {
+  Future<void> _refreshDashboard(String customerId) async {
     setState(() {
       _isRefreshing = true;
     });
 
-    // Simulate API call to refresh data
-    await Future.delayed(const Duration(milliseconds: 1500));
+    // Refresh all data providers
+    ref.invalidate(customerDashboardProvider(customerId));
+    ref.invalidate(marketRatesProvider);
+    ref.invalidate(customerSchemesProvider(customerId));
+    ref.invalidate(customerPaymentsProvider(customerId));
+
+    await Future.delayed(const Duration(milliseconds: 500));
 
     setState(() {
       _isRefreshing = false;
@@ -181,45 +350,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  // LOADING STATE - Skeleton loaders
-  Widget _buildLoadingState() {
-    return Column(
-      children: [
-        _buildHeader(),
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              _buildSkeletonCard(height: 120),
-              const SizedBox(height: 16),
-              _buildSkeletonCard(height: 60),
-              const SizedBox(height: 16),
-              _buildSkeletonCard(height: 100),
-              const SizedBox(height: 16),
-              _buildSkeletonCard(height: 100),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+
 
   Widget _buildSkeletonCard({required double height}) {
     return Container(
       height: height,
       decoration: BoxDecoration(
-        color: AppColors.inputBackground,
+        color: Colors.white.withOpacity(0.05),
         borderRadius: BorderRadius.circular(16),
-                  ),
-                );
-              }
+      ),
+    );
+  }
 
-  // HEADER - Top bar with greeting and gold price chip with change
-  Widget _buildHeader() {
+
+  Widget _buildHeader(Map<String, dynamic> profile) {
     // Get user initial for avatar
-    final userInitial = MockData.userName.isNotEmpty
-        ? MockData.userName[0].toUpperCase()
+    final userName = profile['name'] ?? 'User';
+    final userInitial = userName.isNotEmpty
+        ? userName[0].toUpperCase()
         : 'U';
+
+    final ratesAsync = ref.watch(marketRatesProvider);
+
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -286,8 +438,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      MockData.userName,
+                      userName,
                       style: GoogleFonts.inter(
+
                         fontSize: 16,
                         fontWeight: FontWeight.w500,
                         color: Colors.white,
@@ -299,263 +452,444 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
 
-          // Right: Gold & Silver price chips
-          Flexible(
-            child: AnimatedOpacity(
-              opacity: _animationsCompleted ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 400),
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => MarketRatesScreen(),
-                    ),
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          // Right: Offline indicator + Gold & Silver price chips
+          Row(
+            children: [
+              // Offline Indicator
+              if (!_isOnline)
+                Container(
+                  margin: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        AppColors.primaryLight.withOpacity(0.2),
-                        AppColors.primary.withOpacity(0.1),
-                      ],
-                    ),
+                    color: AppColors.warning.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: AppColors.primary,
-                      width: 1.5,
+                      color: AppColors.warning,
+                      width: 1,
                     ),
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withOpacity(0.2),
-                        blurRadius: 8,
-                        spreadRadius: 1,
-                      ),
-                    ],
                   ),
-                  child: Column(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // Gold price
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'Au',
-                            style: GoogleFonts.inter(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              '₹${_formatNumber(MockData.goldPricePerGram)}',
-                              style: GoogleFonts.inter(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.primary,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Icon(
-                            MockData.goldPriceChange > 0
-                                ? Icons.arrow_upward
-                                : Icons.arrow_downward,
-                            color: MockData.goldPriceChange > 0
-                                ? AppColors.success
-                                : AppColors.danger,
-                            size: 12,
-                          ),
-                        ],
+                      Icon(
+                        Icons.wifi_off,
+                        color: AppColors.warning,
+                        size: 14,
                       ),
-                      const SizedBox(height: 2),
-                      // Silver price
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'Ag',
-                            style: GoogleFonts.inter(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              '₹${_formatNumber(MockData.silverPricePerGram)}',
-                              style: GoogleFonts.inter(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textSecondary,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Icon(
-                            MockData.silverPriceChange > 0
-                                ? Icons.arrow_upward
-                                : Icons.arrow_downward,
-                            color: MockData.silverPriceChange > 0
-                                ? AppColors.success
-                                : AppColors.danger,
-                            size: 12,
-                          ),
-                        ],
+                      const SizedBox(width: 4),
+                      Text(
+                        'Offline',
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.warning,
+                        ),
                       ),
                     ],
                   ),
                 ),
+              
+              // Market Rates
+              Flexible(
+
+                child: AnimatedOpacity(
+                  opacity: _animationsCompleted ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 400),
+                  child: GestureDetector(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => MarketRatesScreen(),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            AppColors.primaryLight.withOpacity(0.2),
+                            AppColors.primary.withOpacity(0.1),
+                          ],
+                        ),
+                        border: Border.all(
+                          color: AppColors.primary,
+                          width: 1.5,
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.2),
+                            blurRadius: 8,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                      ),
+                      child: ratesAsync.when(
+                        data: (rates) => Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            // Gold price
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Au',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    '₹${_formatNumber(rates['gold'])}',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.primary,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Icon(
+                                  rates['gold_change'] >= 0
+                                      ? Icons.arrow_upward
+                                      : Icons.arrow_downward,
+                                  color: rates['gold_change'] >= 0
+                                      ? AppColors.success
+                                      : AppColors.danger,
+                                  size: 12,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            // Silver price
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Ag',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    '₹${_formatNumber(rates['silver'])}',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textSecondary,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Icon(
+                                  rates['silver_change'] >= 0
+                                      ? Icons.arrow_upward
+                                      : Icons.arrow_downward,
+                                  color: rates['silver_change'] >= 0
+                                      ? AppColors.success
+                                      : AppColors.danger,
+                                  size: 12,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        loading: () => const SizedBox(height: 32, width: 60, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
+                        error: (_, __) => const Icon(Icons.error_outline, color: Colors.white24, size: 20),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  // HERO SECTION - The Wealth Card with glassmorphism and premium glows (optimized)
-  Widget _buildHeroCard() {
-    return AnimatedOpacity(
-      opacity: _animationsCompleted ? 1.0 : 0.0,
-      duration: const Duration(milliseconds: 500),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        padding: const EdgeInsets.all(28),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.12),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: Colors.white.withOpacity(0.08),
-            width: 1,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withOpacity(0.2), // Reduced from 0.4 to 0.2 (50% reduction)
-              blurRadius: 35,
-              spreadRadius: 2,
-            ),
-            BoxShadow(
-              color: Colors.black.withOpacity(0.4),
-              blurRadius: 20,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
+  // CARD 1 & 2: Grams and Market Value
+  Widget _buildPortfolioGrid(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+    return metricsAsync.when(
+      data: (metrics) => Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Main portfolio value with subtle glow
+            // Total Grams Card
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withOpacity(0.3), // Reduced from 0.6 to 0.3 (50% reduction)
-                    blurRadius: 30,
-                    spreadRadius: 2,
+                gradient: LinearGradient(
+                  colors: [AppColors.primary.withOpacity(0.2), Colors.white.withOpacity(0.05)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(Icons.auto_awesome, color: AppColors.primary, size: 28),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Total Gold & Silver', style: GoogleFonts.inter(color: Colors.white70, fontSize: 14)),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${((metrics['total_grams'] ?? 0) as num).toStringAsFixed(3)} Grams',
+                          style: GoogleFonts.outfit(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                        if (((metrics['gold_grams'] ?? 0) as num) > 0 || ((metrics['silver_grams'] ?? 0) as num) > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Row(
+                              children: [
+                                if (((metrics['gold_grams'] ?? 0) as num) > 0)
+                                  _buildAssetMiniTag('Gold', '${metrics['gold_grams'] ?? 0}g', AppColors.primary),
+                                if (((metrics['silver_grams'] ?? 0) as num) > 0)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8.0),
+                                    child: _buildAssetMiniTag('Silver', '${metrics['silver_grams'] ?? 0}g', Colors.white60),
+                                  ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ],
               ),
-              child: Text(
-                '₹${_formatCurrency(MockData.portfolioValue)}',
-                style: GoogleFonts.inter(
-                  fontSize: 36,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.primary,
-                  letterSpacing: 0.5,
-                  height: 1.1,
-                  shadows: [
-                    BoxShadow(
-                      color: AppColors.primary.withOpacity(0.15), // Reduced from 0.3 to 0.15 (50% reduction)
-                      blurRadius: 15,
-                      spreadRadius: 1,
+            ),
+            const SizedBox(height: 16),
+            // Market Value Card
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      shape: BoxShape.circle,
                     ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Subtitle
-            Text(
-              'Net Wealth Accumulated',
-              style: GoogleFonts.inter(
-                fontSize: 15,
-                fontWeight: FontWeight.w400,
-                color: AppColors.textSecondary,
-                letterSpacing: 0.3,
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Today's change
-            Row(
-              children: [
-                Icon(
-                  MockData.isProfit ? Icons.arrow_upward : Icons.arrow_downward,
-                  color: MockData.isProfit ? AppColors.success : AppColors.danger,
-                  size: 16,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  '${MockData.isProfit ? '+' : '-'}₹${_formatCurrency(MockData.todayChange)} today',
-                  style: GoogleFonts.inter(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: MockData.isProfit ? AppColors.success : AppColors.danger,
+                    child: Icon(Icons.account_balance_wallet, color: AppColors.success, size: 28),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Current Market Value', style: GoogleFonts.inter(color: Colors.white70, fontSize: 14)),
+                        const SizedBox(height: 4),
+                        Text(
+                          '₹${_formatCurrency(metrics['market_value'])}',
+                          style: GoogleFonts.outfit(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.success),
+                        ),
+                        Text(
+                          'Based on live rates',
+                          style: GoogleFonts.inter(color: Colors.white38, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
+      loading: () => _buildShimmerHero(),
+      error: (_, __) => const SizedBox.shrink(),
     );
   }
 
-  // KEY METRICS ROW - Total Investment, Return % with glassmorphism
-  Widget _buildKeyMetrics() {
-    final returnPercent = MockData.overallReturnPercent;
-    final isPositiveReturn = returnPercent >= 0;
+  Widget _buildAssetMiniTag(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Text(
+        '$label: $value',
+        style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+      ),
+    );
+  }
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 700),
-      curve: Curves.easeOut,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.translate(
-            offset: Offset(0, 15 * (1 - value)),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  // Total Investment
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => const TotalInvestmentScreen(),
-                          ),
-                        );
-                      },
+  // CARD 3: Next Payment
+  Widget _buildNextPaymentCard(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+    return metricsAsync.when(
+      data: (metrics) {
+        final nextDueStr = metrics['next_due'];
+        if (nextDueStr == null) return const SizedBox.shrink();
+        
+        final nextDue = DateTime.parse(nextDueStr);
+        final now = DateTime.now();
+        final daysDiff = nextDue.difference(DateTime(now.year, now.month, now.day)).inDays;
+        
+        Color statusColor = AppColors.success;
+        String statusText = 'On Track';
+        IconData statusIcon = Icons.check_circle_outline;
+        
+        if (daysDiff < 0) {
+          statusColor = AppColors.danger;
+          statusText = 'Overdue';
+          statusIcon = Icons.error_outline;
+        } else if (daysDiff <= 3) {
+          statusColor = AppColors.warning;
+          statusText = 'Due Soon';
+          statusIcon = Icons.access_time;
+        }
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: statusColor.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Icon(statusIcon, color: statusColor, size: 32),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Next Payment Due', style: GoogleFonts.inter(color: Colors.white70, fontSize: 14)),
+                      const SizedBox(height: 4),
+                      Text(
+                        DateFormat('EEE, dd MMM yyyy').format(nextDue),
+                        style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      Text(
+                        statusText,
+                        style: GoogleFonts.inter(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PaymentScheduleScreen())),
+                  child: Text('View All', style: GoogleFonts.inter(color: AppColors.primary)),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+  // CARD 4: Payments Progress
+  Widget _buildProgressCard(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+    return metricsAsync.when(
+      data: (metrics) {
+        final progress = (metrics['progress'] as num?)?.toDouble() ?? 0.0;
+        final made = metrics['total_payments_made'] ?? 0;
+        final total = metrics['total_expected_payments'] ?? 0;
+        
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppColors.backgroundLighter,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(color: Colors.black26, blurRadius: 10, offset: const Offset(0, 4)),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Payments Progress', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    Text('${(progress * 100).toStringAsFixed(0)}%', style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                LinearProgressIndicator(
+                  value: progress.clamp(0.0, 1.0),
+                  backgroundColor: Colors.white10,
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                  minHeight: 10,
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'You have completed $made out of $total expected payments across all active schemes.',
+                  style: GoogleFonts.inter(color: Colors.white54, fontSize: 13, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+
+  Widget _buildKeyMetrics(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+
+    return metricsAsync.when(
+      data: (metrics) => TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0.0, end: 1.0),
+        duration: const Duration(milliseconds: 700),
+        curve: Curves.easeOut,
+        builder: (context, value, child) {
+          return Opacity(
+            opacity: value,
+            child: Transform.translate(
+              offset: Offset(0, 15 * (1 - value)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  children: [
+                    // Active Schemes Count
+                    Expanded(
                       child: Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -565,19 +899,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             color: Colors.white.withOpacity(0.06),
                             width: 1,
                           ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.3),
-                              blurRadius: 18,
-                              offset: const Offset(0, 6),
-                            ),
-                          ],
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Total Investment',
+                              'Active Schemes',
                               style: GoogleFonts.inter(
                                 fontSize: 12,
                                 color: AppColors.textSecondary,
@@ -585,7 +912,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              '₹${_formatCurrency(MockData.totalInvestment)}',
+                              '${metrics['schemes_count']}',
                               style: GoogleFonts.inter(
                                 fontSize: 20,
                                 fontWeight: FontWeight.w700,
@@ -596,104 +923,103 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ),
                     ),
-                  ),
 
-                  const SizedBox(width: 12),
+                    const SizedBox(width: 12),
 
-                  // Return Percentage (optimized - no animation rebuild)
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.06),
-                          width: 1,
+                    // Next Due Date
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.06),
+                            width: 1,
+                          ),
                         ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.3),
-                            blurRadius: 18,
-                            offset: const Offset(0, 6),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Overall Return',
-                            style: GoogleFonts.inter(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Next Due',
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(
-                                isPositiveReturn ? Icons.trending_up : Icons.trending_down,
-                                color: isPositiveReturn ? AppColors.success : AppColors.danger,
-                                size: 18,
+                            const SizedBox(height: 4),
+                            Text(
+                              metrics['next_due'] != null 
+                                  ? DateFormat('dd MMM').format(DateTime.parse(metrics['next_due']))
+                                  : 'N/A',
+                              style: GoogleFonts.inter(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.primary,
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '${isPositiveReturn ? '+' : ''}${returnPercent.toStringAsFixed(1)}%',
-                                style: GoogleFonts.inter(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w700,
-                                  color: isPositiveReturn ? AppColors.success : AppColors.danger,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
+      loading: () => _buildShimmerMetrics(),
+      error: (_, __) => const SizedBox.shrink(),
     );
   }
 
 
-  // ASSET HOLDINGS GRID - With value in rupees and percentage change
-  Widget _buildAssetHoldings() {
-    return Column(
-      children: [
-        // Gold Holdings Card
-        _buildAssetCard(
-          icon: Icons.monetization_on,
-          iconColor: AppColors.primary,
-          title: 'Gold Holdings',
-          amount: '${MockData.goldGrams} g',
-          value: MockData.goldValue,
-          changePercent: MockData.goldChangePercent,
-          borderColor: AppColors.primary,
-          isGold: true,
-        ),
 
-        const SizedBox(height: 12),
+  Widget _buildAssetHoldings(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
+    final ratesAsync = ref.watch(marketRatesProvider);
 
-        // Silver Holdings Card
-        _buildAssetCard(
-          icon: Icons.monetization_on,
-          iconColor: AppColors.textSecondary,
-          title: 'Silver Holdings',
-          amount: '${MockData.silverGrams} g',
-          value: MockData.silverValue,
-          changePercent: MockData.silverChangePercent,
-          borderColor: AppColors.textSecondary,
-          isGold: false,
+    return metricsAsync.when(
+      data: (metrics) => ratesAsync.when(
+        data: (rates) => Column(
+          children: [
+            // Gold Holdings Card
+            _buildAssetCard(
+              icon: Icons.monetization_on,
+              iconColor: AppColors.primary,
+              title: 'Gold Holdings',
+              amount: '${metrics['gold_grams'].toStringAsFixed(3)} g',
+              value: metrics['gold_grams'] * rates['gold'],
+              changePercent: 0, // Mock for now or calculate if history available
+              borderColor: AppColors.primary,
+              isGold: true,
+            ),
+
+            const SizedBox(height: 12),
+
+            // Silver Holdings Card
+            _buildAssetCard(
+              icon: Icons.monetization_on,
+              iconColor: AppColors.textSecondary,
+              title: 'Silver Holdings',
+              amount: '${metrics['silver_grams'].toStringAsFixed(3)} g',
+              value: metrics['silver_grams'] * rates['silver'],
+              changePercent: 0,
+              borderColor: AppColors.textSecondary,
+              isGold: false,
+            ),
+          ],
         ),
-      ],
+        loading: () => _buildShimmerAssets(),
+        error: (_, __) => const SizedBox.shrink(),
+      ),
+      loading: () => _buildShimmerAssets(),
+      error: (_, __) => const SizedBox.shrink(),
     );
   }
+
 
   Widget _buildAssetCard({
     required IconData icon,
@@ -856,283 +1182,314 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
 
   // PAYMENT CALENDAR - Next 5 upcoming payment dates preview
-  Widget _buildPaymentCalendar() {
-    final calendarData = MockData.paymentCalendarPreview;
+  Widget _buildPaymentCalendar(String customerId) {
+    final metricsAsync = ref.watch(customerDashboardProvider(customerId));
     final today = DateTime.now();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Section title
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+    return metricsAsync.when(
+      data: (metrics) {
+        final nextDueStr = metrics['next_due'];
+        final nextDue = nextDueStr != null ? DateTime.parse(nextDueStr) : null;
+        
+        // Construct a simple preview based on next due if available
+        final List<Map<String, dynamic>> calendarData = [];
+        if (nextDue != null) {
+          calendarData.add({
+            'date': nextDue,
+            'dayNum': DateFormat('dd').format(nextDue),
+            'dayName': DateFormat('E').format(nextDue),
+            'status': 'DUE',
+          });
+          
+          // Add some upcoming mock placeholders for UI richness
+          for (int i = 1; i < 5; i++) {
+            final date = nextDue.add(Duration(days: i * 30));
+            calendarData.add({
+              'date': date,
+              'dayNum': DateFormat('dd').format(date),
+              'dayName': DateFormat('E').format(date),
+              'status': 'UPCOMING',
+            });
+          }
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Section title
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Your Payment Plan",
+                    style: GoogleFonts.inter(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "Based on your active schemes",
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Horizontal scrollable calendar with glassmorphism
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: calendarData.length + 1, // +1 for "View All" button
+                    itemBuilder: (context, index) {
+                      if (index == calendarData.length) {
+                        // "View All" button
+                        return GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const PaymentScheduleScreen(),
+                              ),
+                            );
+                          },
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 8, left: 8),
+                            width: 70,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: AppColors.primary,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.arrow_forward,
+                                  color: AppColors.primary,
+                                  size: 20,
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'View All',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+
+                      final dayData = calendarData[index];
+                      final date = dayData['date'] as DateTime;
+                      final dayNum = dayData['dayNum'] as String;
+                      final dayName = dayData['dayName'] as String;
+                      final status = dayData['status'] as String;
+                      final isToday = date.year == today.year &&
+                          date.month == today.month &&
+                          date.day == today.day;
+
+                      IconData statusIcon;
+                      Color statusColor;
+
+                      if (status == 'PAID') {
+                        statusIcon = Icons.check_circle;
+                        statusColor = AppColors.success;
+                      } else if (status == 'MISSED') {
+                        statusIcon = Icons.cancel;
+                        statusColor = AppColors.danger;
+                      } else if (status == 'DUE' || (status == 'UPCOMING' && isToday)) {
+                        statusIcon = Icons.circle_outlined;
+                        statusColor = AppColors.primary;
+                      } else {
+                        statusIcon = Icons.circle_outlined;
+                        statusColor = AppColors.textSecondary;
+                      }
+
+                      return Container(
+                        margin: const EdgeInsets.only(right: 8),
+                        width: 70,
+                        height: 90,
+                        decoration: BoxDecoration(
+                          color: AppColors.backgroundDarker.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(12),
+                          border: isToday
+                              ? Border.all(
+                                  color: AppColors.primary,
+                                  width: 2,
+                                )
+                              : null,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              dayNum,
+                              style: GoogleFonts.inter(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              dayName,
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w400,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Icon(
+                              statusIcon,
+                              color: statusColor,
+                              size: 18,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+      loading: () => _buildShimmerCalendar(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+
+  Widget _buildRecentActivity(String customerId) {
+    final paymentsAsync = ref.watch(customerPaymentsProvider(customerId));
+
+    return paymentsAsync.when(
+      data: (payments) {
+        if (payments.isEmpty) {
+          return _buildComponentPlaceholder(
+            icon: Icons.receipt_long,
+            message: 'No recent transactions',
+            subtitle: 'Your transaction history will appear here',
+          );
+        }
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Section title
               Text(
-                "Your Payment Plan",
+                'Recent Transactions',
                 style: GoogleFonts.inter(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: Colors.white,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                "Based on your active schemes",
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.textSecondary,
+
+              const SizedBox(height: 16),
+
+              // Transaction rows
+              ...payments.asMap().entries.map((entry) {
+                final index = entry.key;
+                final txn = entry.value;
+                final isLast = index == payments.length - 1;
+                
+                final amount = (txn['amount'] as num).toDouble();
+                final dateStr = DateFormat('dd MMM yyyy').format(DateTime.parse(txn['created_at']));
+                final status = txn['status'] as String;
+
+                return _buildTransactionRow(
+                  date: dateStr,
+                  amount: amount,
+                  status: status.toUpperCase(),
+                  isLast: isLast,
+                  schemeName: txn['user_schemes']?['schemes']?['name'] ?? 'Gold Scheme',
+                );
+              }),
+              
+              const SizedBox(height: 12),
+              // View All link
+              Align(
+                alignment: Alignment.centerRight,
+                child: GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const TransactionHistoryScreen(),
+                      ),
+                    );
+                  },
+                  child: Text(
+                    'View All Transactions',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
                 ),
               ),
             ],
           ),
-        ),
-
-        // Horizontal scrollable calendar with glassmorphism
-        ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(
-              height: 100,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: calendarData.length + 1, // +1 for "View All" button
-                itemBuilder: (context, index) {
-                  if (index == calendarData.length) {
-                    // "View All" button
-                    return GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => const PaymentScheduleScreen(),
-                          ),
-                        );
-                      },
-                      child: Container(
-                        margin: const EdgeInsets.only(right: 8, left: 8),
-                        width: 70,
-                        height: 90,
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: AppColors.primary,
-                            width: 1.5,
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.arrow_forward,
-                              color: AppColors.primary,
-                              size: 20,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'View All',
-                              style: GoogleFonts.inter(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }
-
-                  final dayData = calendarData[index];
-                  final date = dayData['date'] as DateTime;
-                  final dayNum = dayData['dayNum'] as String;
-                  final dayName = dayData['dayName'] as String;
-                  final status = dayData['status'] as String;
-                  final isToday = date.year == today.year &&
-                      date.month == today.month &&
-                      date.day == today.day;
-
-                  IconData statusIcon;
-                  Color statusColor;
-
-                  if (status == 'PAID') {
-                    statusIcon = Icons.check_circle;
-                    statusColor = AppColors.success;
-                  } else if (status == 'MISSED') {
-                    statusIcon = Icons.cancel;
-                    statusColor = AppColors.danger;
-                  } else if (status == 'DUE' || (status == 'UPCOMING' && isToday)) {
-                    statusIcon = Icons.circle_outlined;
-                    statusColor = AppColors.primary;
-                  } else {
-                    statusIcon = Icons.circle_outlined;
-                    statusColor = AppColors.textSecondary;
-                  }
-
-                  return Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    width: 70,
-                    height: 90,
-                    decoration: BoxDecoration(
-                      color: AppColors.backgroundDarker.withOpacity(0.8),
-                      borderRadius: BorderRadius.circular(12),
-                      border: isToday
-                          ? Border.all(
-                              color: AppColors.primary,
-                              width: 2,
-                            )
-                          : null,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          dayNum,
-                          style: GoogleFonts.inter(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          dayName,
-                          style: GoogleFonts.inter(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w400,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Icon(
-                          statusIcon,
-                          color: statusColor,
-                          size: 18,
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      ],
+        );
+      },
+      loading: () => _buildShimmerRecent(),
+      error: (_, __) => const SizedBox.shrink(),
     );
   }
 
-  // RECENT ACTIVITY - Enhanced with only PAID transactions
-  Widget _buildRecentActivity() {
-    // Filter only PAID transactions
-    final paidTransactions = MockData.recentTransactions
-        .where((transaction) => transaction['status'] == 'PAID')
-        .toList();
 
-    if (paidTransactions.isEmpty) {
-      return _buildEmptyState(
-        icon: Icons.receipt_long,
-        message: 'No recent transactions',
-        subtitle: 'Your transaction history will appear here',
-      );
-    }
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Section title
-          Text(
-            'Recent Transactions',
-            style: GoogleFonts.inter(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: Colors.white,
-            ),
-          ),
 
-          const SizedBox(height: 16),
-
-          // Transaction rows with slide-up animation
-          ...paidTransactions.asMap().entries.map((entry) {
-            final index = entry.key;
-            final transaction = entry.value;
-            final isLast = index == paidTransactions.length - 1;
-
-            return TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.0, end: 1.0),
-              duration: Duration(milliseconds: 500 + (index * 100)),
-              curve: Curves.easeOut,
-              builder: (context, value, child) {
-                return Opacity(
-                  opacity: value,
-                  child: Transform.translate(
-                    offset: Offset(0, 20 * (1 - value)),
-                    child: _buildTransactionRow(
-                      date: transaction['date'] as String,
-                      amount: transaction['amount'] as int,
-                      status: transaction['status'] as String,
-                      isLast: isLast,
-                    ),
-                  ),
-                );
-              },
-            );
-          }),
-
-          const SizedBox(height: 16),
-
-          // View All link
-          Align(
-            alignment: Alignment.centerRight,
-            child: GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const TransactionHistoryScreen(),
-                  ),
-                );
-              },
-              child: Text(
-                'View All Transactions',
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.primary,
-                  decoration: TextDecoration.underline,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildTransactionRow({
     required String date,
-    required int amount,
+    required double amount,
     required String status,
     required bool isLast,
+    required String schemeName,
   }) {
+
     final isPaid = status == 'PAID';
     final statusIcon = isPaid ? Icons.check_circle : Icons.cancel;
     final statusColor = isPaid ? AppColors.success : AppColors.danger;
@@ -1148,10 +1505,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   date: date,
                   amount: amount,
                   status: status,
-                  transactionId: 'TXN${DateTime.now().millisecondsSinceEpoch}',
-                  method: 'UPI',
-                  scheme: 'Monthly Gold Plan',
+                  transactionId: 'TXN-${date.replaceAll(' ', '')}',
+                  method: 'N/A',
+                  scheme: schemeName,
                 ),
+
               ),
             );
           },
@@ -1312,7 +1670,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // MY ACTIVE SCHEMES
-  Widget _buildActiveSchemes() {
+  Widget _buildActiveSchemes(String customerId) {
+    final schemesAsync = ref.watch(customerSchemesProvider(customerId));
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1332,23 +1692,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // Horizontal scrollable scheme cards
         SizedBox(
           height: 180,
-          child: FutureBuilder<List<Map<String, dynamic>>>(
-            future: _fetchActiveSchemes(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return Center(
-                  child: CircularProgressIndicator(
-                    color: AppColors.primary,
-                  ),
-                );
-              }
-
-              if (snapshot.hasError) {
-                return _buildActiveSchemesEmptyState();
-              }
-
-              final schemes = snapshot.data ?? [];
-
+          child: schemesAsync.when(
+            data: (schemes) {
               if (schemes.isEmpty) {
                 return _buildActiveSchemesEmptyState();
               }
@@ -1358,10 +1703,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 itemCount: schemes.length,
                 itemBuilder: (context, index) {
-                  return _buildActiveSchemeCard(schemes[index]);
+                  final s = schemes[index];
+                  // Map raw DB data to card expected format
+                  final cardData = {
+                    'scheme_id': s['scheme_id'],
+                    'scheme_name': s['schemes']?['name'] ?? 'Unknown',
+                    'scheme_type': s['schemes']?['asset_type'] ?? 'Gold',
+                    'payments_made': s['payments_made'] ?? 0,
+                    // Use a default or calculated duration if not in metadata
+                    'total_payments': (s['schemes']?['duration_months'] as int?) != null ? (s['schemes']!['duration_months'] as int) * 30 : 365,
+                    'accumulated_metal': '${s['accumulated_grams'] ?? 0} g',
+                  };
+                  return _buildActiveSchemeCard(cardData);
                 },
               );
             },
+            loading: () => _buildShimmerActiveSchemes(),
+            error: (_, __) => _buildActiveSchemesEmptyState(),
           ),
         ),
         const SizedBox(height: 16),
@@ -1369,100 +1727,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<List<Map<String, dynamic>>> _fetchActiveSchemes() async {
-    try {
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId == null) {
-        final mockSchemes = _getMockActiveSchemes();
-        _activeSchemes = mockSchemes;
-        return mockSchemes;
-      }
-
-      // Query user's active schemes from Supabase
-      // Note: Adjust table name and columns based on your actual database schema
-      final response = await Supabase.instance.client
-          .from('user_schemes')
-          .select('*, schemes(*)')
-          .eq('user_id', userId)
-          .eq('status', 'active')
-          .order('enrollment_date', ascending: false);
-
-      if (response == null || response.isEmpty) {
-        // Return mock data for now if no database entries
-        final mockSchemes = _getMockActiveSchemes();
-        _activeSchemes = mockSchemes;
-        return mockSchemes;
-      }
-
-      // Transform the data to match our card structure
-      final schemes = (response as List).map((scheme) {
-        final schemeData = scheme['schemes'] ?? {};
-        return {
-          'scheme_id': scheme['scheme_id'] ?? schemeData['id'] ?? '',
-          'scheme_name': schemeData['name'] ?? 'Unknown Scheme',
-          'scheme_type': schemeData['type'] ?? 'Gold',
-          'scheme_number': _extractSchemeNumber(schemeData['name'] ?? ''),
-          'enrollment_date': scheme['enrollment_date'] ?? DateTime.now().toIso8601String(),
-          'payments_made': scheme['payments_made'] ?? 0,
-          'total_payments': scheme['total_payments'] ?? 365,
-          'total_amount_paid': scheme['total_amount_paid'] ?? 0.0,
-          'accumulated_metal': _calculateAccumulatedMetal(
-            scheme['payments_made'] ?? 0,
-            scheme['total_payments'] ?? 365,
-            schemeData['metalAccumulation'] ?? '0 g',
-            schemeData['type'] ?? 'Gold',
-          ),
-          'payment_frequency': scheme['payment_frequency'] ?? 'daily',
-          'min_amount': schemeData['minDailyAmount'] ?? schemeData['min_amount'] ?? 0.0,
-          'max_amount': schemeData['maxDailyAmount'] ?? schemeData['max_amount'] ?? 0.0,
-        };
-      }).toList();
-      
-      _activeSchemes = schemes;
-      return schemes;
-    } catch (e) {
-      // If database query fails, return mock data
-      print('Error fetching active schemes: $e');
-      final mockSchemes = _getMockActiveSchemes();
-      _activeSchemes = mockSchemes;
-      return mockSchemes;
-    }
-  }
-
-  List<Map<String, dynamic>> _getMockActiveSchemes() {
-    // Return mock active schemes for testing
-    // In production, this should come from the database
-    return [
-      {
-        'scheme_id': 'gold-scheme-3',
-        'scheme_name': 'Gold Scheme 3',
-        'scheme_type': 'Gold',
-        'scheme_number': '3',
-        'enrollment_date': DateTime.now().subtract(const Duration(days: 240)).toIso8601String(),
-        'payments_made': 240,
-        'total_payments': 365,
-        'total_amount_paid': 186000.0,
-        'accumulated_metal': '1.32g',
-        'payment_frequency': 'daily',
-        'min_amount': 750.0,
-        'max_amount': 1000.0,
-      },
-      {
-        'scheme_id': 'silver-scheme-1',
-        'scheme_name': 'Silver Scheme 1',
-        'scheme_type': 'Silver',
-        'scheme_number': '1',
-        'enrollment_date': DateTime.now().subtract(const Duration(days: 150)).toIso8601String(),
-        'payments_made': 150,
-        'total_payments': 365,
-        'total_amount_paid': 18750.0,
-        'accumulated_metal': '10.3g',
-        'payment_frequency': 'daily',
-        'min_amount': 125.0,
-        'max_amount': 150.0,
-      },
-    ];
-  }
 
 
   String _extractSchemeNumber(String schemeName) {
@@ -1735,8 +1999,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // EMPTY STATE
-  Widget _buildEmptyState({
+  // COMPONENT PLACEHOLDER (For lists/sections)
+  Widget _buildComponentPlaceholder({
     required IconData icon,
     required String message,
     String? subtitle,
@@ -1748,7 +2012,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             Icon(
               icon,
-              color: AppColors.textSecondary,
+              color: Colors.white24,
               size: 48,
             ),
             const SizedBox(height: 16),
@@ -1757,7 +2021,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               style: GoogleFonts.inter(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
-                color: AppColors.textSecondary,
+                color: Colors.white54,
               ),
             ),
             if (subtitle != null) ...[
@@ -1766,7 +2030,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 subtitle,
                 style: GoogleFonts.inter(
                   fontSize: 14,
-                  color: AppColors.textSecondary.withOpacity(0.7),
+                  color: Colors.white38,
                 ),
               ),
             ],
@@ -1896,5 +2160,140 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _showFeedback() {
     HapticFeedback.lightImpact();
   }
+
+  Widget _buildShimmerHeader() {
+    return Shimmer.fromColors(
+      baseColor: Colors.white.withOpacity(0.05),
+      highlightColor: Colors.white.withOpacity(0.1),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        height: 80,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
+
+
+  // SHIMMER LOADING WIDGETS
+  Widget _buildShimmerHero() {
+    return Shimmer.fromColors(
+      baseColor: Colors.white.withOpacity(0.05),
+      highlightColor: Colors.white.withOpacity(0.1),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        height: 180,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShimmerMetrics() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: List.generate(2, (index) => Expanded(
+          child: Shimmer.fromColors(
+            baseColor: Colors.white.withOpacity(0.05),
+            highlightColor: Colors.white.withOpacity(0.1),
+            child: Container(
+              margin: EdgeInsets.only(left: index == 1 ? 12 : 0, right: index == 0 ? 12 : 0),
+              height: 80,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        )),
+      ),
+    );
+  }
+
+  Widget _buildShimmerAssets() {
+    return Column(
+      children: List.generate(2, (index) => Shimmer.fromColors(
+        baseColor: Colors.white.withOpacity(0.05),
+        highlightColor: Colors.white.withOpacity(0.1),
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          height: 90,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+      )),
+    );
+  }
+
+  Widget _buildShimmerCalendar() {
+    return Shimmer.fromColors(
+      baseColor: Colors.white.withOpacity(0.05),
+      highlightColor: Colors.white.withOpacity(0.1),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        height: 100,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShimmerRecent() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(width: 150, height: 20, color: Colors.white.withOpacity(0.05)),
+          const SizedBox(height: 16),
+          ...List.generate(3, (index) => Shimmer.fromColors(
+            baseColor: Colors.white.withOpacity(0.05),
+            highlightColor: Colors.white.withOpacity(0.1),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              height: 60,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShimmerActiveSchemes() {
+    return SizedBox(
+      height: 180,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: 3,
+        itemBuilder: (_, __) => Shimmer.fromColors(
+          baseColor: Colors.white.withOpacity(0.05),
+          highlightColor: Colors.white.withOpacity(0.1),
+          child: Container(
+            margin: const EdgeInsets.only(right: 12),
+            width: 200,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
+
 

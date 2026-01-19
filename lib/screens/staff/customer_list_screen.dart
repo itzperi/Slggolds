@@ -191,7 +191,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
           context,
           MaterialPageRoute(
             builder: (context) => CustomerDetailScreen(
-              customerId: customer['id'],
+              staffId: widget.staffId,
               customer: customer,
             ),
           ),

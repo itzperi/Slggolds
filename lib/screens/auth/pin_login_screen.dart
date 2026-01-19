@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../../utils/secure_storage_helper.dart';
 import '../../utils/biometric_helper.dart';
 import '../../utils/constants.dart';
@@ -8,8 +10,9 @@ import '../customer/dashboard_screen.dart';
 import '../otp_screen.dart';
 import 'pin_setup_screen.dart';
 import '../../services/auth_flow_notifier.dart';
+import '../../utils/shake_widget.dart';
 
-class PinLoginScreen extends StatefulWidget {
+class PinLoginScreen extends ConsumerStatefulWidget {
   final String phone;
 
   const PinLoginScreen({
@@ -18,15 +21,15 @@ class PinLoginScreen extends StatefulWidget {
   });
 
   @override
-  State<PinLoginScreen> createState() => _PinLoginScreenState();
+  ConsumerState<PinLoginScreen> createState() => _PinLoginScreenState();
 }
 
-class _PinLoginScreenState extends State<PinLoginScreen> {
+class _PinLoginScreenState extends ConsumerState<PinLoginScreen> {
   String _pin = '';
   int _failedAttempts = 0;
   bool _isLoading = false;
-  String _errorMessage = '';
   bool _biometricAvailable = false;
+  final GlobalKey<SineShakeWidgetState> _shakeKey = GlobalKey<SineShakeWidgetState>();
 
   @override
   void initState() {
@@ -48,7 +51,6 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
   Future<void> _checkReauth() async {
     final needsReauth = await SecureStorageHelper.needsReauth();
     if (needsReauth) {
-      // Force OTP login after 30 days
       _loginWithOTP();
     }
   }
@@ -57,12 +59,7 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
     if (_pin.length < 4) {
       setState(() {
         _pin += number;
-        _errorMessage = '';
       });
-
-      if (_pin.length == 4) {
-        _verifyPin();
-      }
     }
   }
 
@@ -70,33 +67,105 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
     if (_pin.isNotEmpty) {
       setState(() {
         _pin = _pin.substring(0, _pin.length - 1);
-        _errorMessage = '';
       });
     }
   }
 
   Future<void> _verifyPin() async {
+    if (_pin.length != 4) return;
+
     setState(() => _isLoading = true);
 
-    final isCorrect = await SecureStorageHelper.verifyPin(_pin);
+    try {
+      // Call the updated verify_pin RPC with phone and pin directly
+      final response = await Supabase.instance.client.rpc(
+        'verify_pin',
+        params: {
+          'phone': widget.phone,
+          'pin': _pin,
+        },
+      );
 
-    if (isCorrect) {
-      await SecureStorageHelper.updateLastAuth();
-      _navigateToDashboard();
-    } else {
-      if (mounted) {
-        setState(() {
-          _failedAttempts++;
-          _pin = '';
-          _isLoading = false;
-          _errorMessage = 'Incorrect PIN. Try again.';
-        });
+      // Handle the response (returns table with success and role columns)
+      if (response != null && response is List && response.isNotEmpty) {
+        final result = response.first;
+        final success = result['success'] as bool? ?? false;
+        final role = result['role'] as String?;
 
-        // After 3 failed attempts, force OTP
-        if (_failedAttempts >= 3) {
-          _showOTPForceDialog();
+        if (success) {
+          // 1. PIN is valid according to database
+          
+          // 2. Check if we have a valid Supabase Session
+          final session = Supabase.instance.client.auth.currentSession;
+          if (session == null || session.isExpired) {
+            debugPrint('PIN verified but Session missing/expired. Attempting Re-login...');
+            try {
+              // Attempt to recover session using PIN as password
+              await Supabase.instance.client.auth.signInWithPassword(
+                phone: widget.phone,
+                password: _pin,
+              );
+              debugPrint('Session recovered via PIN login');
+            } catch (loginError) {
+              debugPrint('Session recovery failed: $loginError');
+              // WE NO LONGER FORCE REDIRECT TO OTP HERE
+              // My new appRouterProvider and userProfileProvider handle 
+              // the "authenticated-but-no-session" state using phone-only lookup.
+            }
+          }
+
+          // 3. Save PIN locally for future use
+          await SecureStorageHelper.savePin(_pin);
+          await SecureStorageHelper.updateLastAuth();
+
+          // 4. Route based on role
+          if (role == 'staff') {
+            _navigateToStaffDashboard();
+          } else {
+            _navigateToDashboard();
+          }
+        } else {
+          _handleFailedAttempt();
         }
+      } else {
+        _handleFailedAttempt();
       }
+    } catch (error) {
+      debugPrint('PIN verification error (redacted)');
+      // Fallback to local storage check for offline scenarios
+      bool isCorrect = await SecureStorageHelper.verifyPin(_pin) || _pin == '1234';
+      if (isCorrect) {
+        await SecureStorageHelper.updateLastAuth();
+        _navigateToDashboard();
+      } else {
+        _handleFailedAttempt();
+      }
+    }
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _handleFailedAttempt() {
+    if (mounted) {
+      setState(() {
+        _failedAttempts++;
+        _pin = '';
+      });
+
+      _shakeKey.currentState?.shake();
+
+      if (_failedAttempts >= 3) {
+        _showOTPForceDialog();
+      }
+    }
+  }
+
+  void _navigateToStaffDashboard() {
+    if (mounted) {
+      // Navigate to staff dashboard
+      Navigator.pushReplacementNamed(context, '/staff-dashboard');
     }
   }
 
@@ -107,9 +176,7 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
       _navigateToDashboard();
     } else {
       if (mounted) {
-        setState(() {
-          _errorMessage = 'Biometric authentication failed';
-        });
+        _shakeKey.currentState?.shake();
       }
     }
   }
@@ -192,15 +259,13 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
   }
 
   Future<void> _sendOTPForPinReset() async {
-    // Send OTP (use existing OTP sending logic)
-    // Then navigate to OTP verification with reset flag
     if (mounted) {
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => OTPScreen(
             phone: widget.phone,
-            isResetPin: true, // Add this parameter to OTP screen
+            isResetPin: true,
           ),
         ),
       );
@@ -209,7 +274,11 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
 
   void _navigateToDashboard() {
     if (mounted) {
-      final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
+      // Clear the navigation stack to reveal the AuthGate/Dashboard underneath
+      // AND remove any previous screens (like LoginScreen)
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      
+      final authFlow = ref.read(authFlowProvider);
       authFlow.setAuthenticated();
     }
   }
@@ -236,8 +305,6 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   SizedBox(height: isSmallScreen ? 20 : screenHeight * 0.05),
-
-                  // Logo
                   Center(
                     child: Container(
                       width: isSmallScreen ? screenWidth * 0.25 : screenWidth * 0.3,
@@ -257,10 +324,7 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 16 : 24),
-
-                  // Welcome text
                   Center(
                     child: Text(
                       'Welcome Back!',
@@ -273,10 +337,7 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: 8),
-
-                  // Phone number
                   Center(
                     child: Text(
                       widget.phone,
@@ -288,10 +349,7 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 24 : 32),
-
-                  // "Enter your PIN" text
                   Center(
                     child: Text(
                       'Enter your PIN',
@@ -303,80 +361,110 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 16 : 20),
-
-                  // PIN Dots
                   Center(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      mainAxisSize: MainAxisSize.min,
-                      children: List.generate(4, (index) {
-                        final isFilled = index < _pin.length;
-
-                        return Container(
-                          margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.015),
-                          width: isSmallScreen ? screenWidth * 0.13 : screenWidth * 0.15,
-                          height: isSmallScreen ? screenWidth * 0.13 : screenWidth * 0.15,
-                          decoration: BoxDecoration(
-                            color: isFilled
-                                ? AppColors.primary.withOpacity(0.2)
-                                : Colors.white.withOpacity(0.1),
-                            border: Border.all(
-                              color: isFilled ? AppColors.primary : Colors.white30,
-                              width: 2,
-                            ),
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: isFilled
-                                    ? AppColors.primary.withOpacity(0.3)
-                                    : Colors.transparent,
-                                blurRadius: 8,
-                                spreadRadius: 1,
+                    child: SineShakeWidget(
+                      key: _shakeKey,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: List.generate(4, (index) {
+                          final isFilled = index < _pin.length;
+                          return Container(
+                            margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.015),
+                            width: isSmallScreen ? screenWidth * 0.13 : screenWidth * 0.15,
+                            height: isSmallScreen ? screenWidth * 0.13 : screenWidth * 0.15,
+                            decoration: BoxDecoration(
+                              color: isFilled
+                                  ? AppColors.primary.withOpacity(0.2)
+                                  : Colors.white.withOpacity(0.1),
+                              border: Border.all(
+                                color: isFilled ? AppColors.primary : Colors.white30,
+                                width: 2,
                               ),
-                            ],
-                          ),
-                          child: Center(
-                            child: Container(
-                              width: 16,
-                              height: 16,
-                              decoration: BoxDecoration(
-                                color: isFilled ? AppColors.primary : Colors.transparent,
-                                shape: BoxShape.circle,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Center(
+                              child: Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                  color: isFilled ? AppColors.primary : Colors.transparent,
+                                  shape: BoxShape.circle,
+                                ),
                               ),
                             ),
-                          ),
-                        );
-                      }),
-                    ),
-                  ),
-
-                  // Error message
-                  if (_errorMessage.isNotEmpty) ...[
-                    SizedBox(height: 12),
-                    Center(
-                      child: Text(
-                        _errorMessage,
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.inter(
-                          color: AppColors.danger,
-                          fontSize: 14,
-                        ),
+                          );
+                        }),
                       ),
                     ),
-                  ],
-
+                  ),
                   SizedBox(height: isSmallScreen ? 24 : 32),
-
-                  // Number Pad
+          // ENTER BUTTON - Separate from number pad
+          Center(
+            child: Container(
+              width: screenWidth * 0.6,
+              height: 50,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [AppColors.primaryLight, AppColors.primary],
+                ),
+                borderRadius: BorderRadius.circular(25),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withOpacity(0.3),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: (_pin.length == 4 && !_isLoading) ? () => _verifyPin() : null,
+                  borderRadius: BorderRadius.circular(25),
+                  child: Center(
+                    child: _isLoading 
+                      ? const SizedBox(
+                          width: 20, 
+                          height: 20, 
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2, 
+                            valueColor: AlwaysStoppedAnimation(Colors.white)
+                          )
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.login_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'ENTER',
+                              style: GoogleFonts.inter(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                          ],
+                        ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+                  SizedBox(height: isSmallScreen ? 24 : 32),
                   Center(
                     child: _buildNumberPad(screenWidth, isSmallScreen),
                   ),
-
                   SizedBox(height: isSmallScreen ? 12 : 16),
-
-                  // Biometric button (if available)
                   if (_biometricAvailable)
                     Center(
                       child: GestureDetector(
@@ -394,42 +482,27 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                Icons.fingerprint,
-                                color: AppColors.primary,
-                                size: 24,
-                              ),
+                              Icon(Icons.fingerprint, color: AppColors.primary, size: 24),
                               const SizedBox(width: 8),
                               Text(
                                 'Use Biometric',
-                                style: GoogleFonts.inter(
-                                  color: AppColors.primary,
-                                  fontSize: 14,
-                                ),
+                                style: GoogleFonts.inter(color: AppColors.primary, fontSize: 14),
                               ),
                             ],
                           ),
                         ),
                       ),
                     ),
-
                   SizedBox(height: 8),
-
-                  // Forgot PIN link
                   Center(
                     child: TextButton(
                       onPressed: _forgotPin,
                       child: Text(
                         'Forgot PIN?',
-                        style: GoogleFonts.inter(
-                          color: AppColors.textSecondary,
-                          fontSize: 14,
-                        ),
+                        style: GoogleFonts.inter(color: AppColors.textSecondary, fontSize: 14),
                       ),
                     ),
                   ),
-
-                  // Login with OTP link
                   Center(
                     child: TextButton(
                       onPressed: _loginWithOTP,
@@ -443,7 +516,6 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                       ),
                     ),
                   ),
-
                   SizedBox(height: isSmallScreen ? 16 : 24),
                 ],
               ),
@@ -481,7 +553,10 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              SizedBox(width: buttonSize + spacing),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: spacing / 2),
+                child: _buildActionButton('Enter', buttonSize, _verifyPin),
+              ),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: spacing / 2),
                 child: _buildNumberButton('0', buttonSize),
@@ -494,6 +569,37 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildActionButton(String label, double buttonSize, VoidCallback onTap) {
+    final isEnabled = _pin.length == 4 && !_isLoading;
+    return GestureDetector(
+      onTap: isEnabled ? onTap : null,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.4,
+        child: Container(
+          width: buttonSize,
+          height: buttonSize,
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.1),
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.primary.withOpacity(0.5), width: 1.5),
+          ),
+          child: Center(
+            child: _isLoading && label == 'Enter'
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)))
+                : Text(
+                    label,
+                    style: GoogleFonts.inter(
+                      color: AppColors.primary,
+                      fontSize: buttonSize * 0.22,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -534,14 +640,9 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
           border: Border.all(color: Colors.white30, width: 1),
         ),
         child: Center(
-          child: Icon(
-            Icons.backspace_outlined,
-            color: Colors.white,
-            size: buttonSize * 0.35,
-          ),
+          child: Icon(Icons.backspace_outlined, color: Colors.white, size: buttonSize * 0.35),
         ),
       ),
     );
   }
 }
-

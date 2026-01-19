@@ -62,7 +62,6 @@ class _CollectTabScreenState extends State<CollectTabScreen> {
     
     try {
       _staffProfileId = await RoleRoutingService.getCurrentProfileId();
-      debugPrint('CollectTabScreen._loadData: staffProfileId = $_staffProfileId');
       if (_staffProfileId == null) {
         debugPrint('CollectTabScreen._loadData: ERROR - staffProfileId is null');
         if (mounted) setState(() => _isLoading = false);
@@ -96,15 +95,6 @@ class _CollectTabScreenState extends State<CollectTabScreen> {
       _targetAmount = (target['amount'] as num?)?.toDouble() ?? 0.0;
       _pendingCount = todayStats['pendingCount'] as int? ?? 0;
       _progress = _targetAmount > 0 ? (_collectedAmount / _targetAmount).clamp(0.0, 1.0) : 0.0;
-
-      // Debug logging
-      debugPrint('CollectTabScreen: Loaded ${_customers.length} customers');
-      debugPrint('CollectTabScreen: Due today: ${_dueToday.length}, Pending: ${_pending.length}');
-      if (_customers.isNotEmpty) {
-        debugPrint('CollectTabScreen: First customer: ${_customers[0]['name']} (${_customers[0]['phone']})');
-      }
-      debugPrint('CollectTabScreen: Search query: "$_searchQuery", Filter: $_filter');
-      debugPrint('CollectTabScreen: Filtered customers: ${_filteredCustomers.length}');
 
       if (mounted) setState(() => _isLoading = false);
     } catch (e, stackTrace) {
@@ -466,8 +456,8 @@ class _CollectTabScreenState extends State<CollectTabScreen> {
               context,
               MaterialPageRoute(
                 builder: (context) => CustomerDetailScreen(
-                  customerId: customer['id'],
                   customer: customer,
+                  staffId: _staffProfileId ?? widget.staffData['id'] ?? '',
                 ),
               ),
             ).then((_) => _loadData());

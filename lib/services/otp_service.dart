@@ -38,8 +38,7 @@ class OtpService {
       return false;
     } catch (e) {
       // On error, deny access for security
-      // Log error for debugging (in production, use proper logging)
-      debugPrint('OTP Whitelist Check Error: $e');
+      debugPrint('OTP: Whitelist check failed');
       return false;
     }
   }

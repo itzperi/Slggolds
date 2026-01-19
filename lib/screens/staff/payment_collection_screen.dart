@@ -256,7 +256,7 @@ class _PaymentCollectionScreenState extends State<PaymentCollectionScreen> {
           context,
           MaterialPageRoute(
             builder: (context) => CustomerDetailScreen(
-              customerId: collection['customerId'],
+              staffId: widget.staffId,
               customer: customer,
             ),
           ),

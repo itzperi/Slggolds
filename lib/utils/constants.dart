@@ -3,17 +3,20 @@
 import 'package:flutter/material.dart';
 
 class AppColors {
-  static const primary = Color(0xFFD4AF37);
-  static const primaryLight = Color(0xFFE5C55A); // Muted gold, lighter than primary but not bright yellow
+  static const primary = Color(0xFFFFD700); // Pure Gold
+  static const gold = Color(0xFFFFD700);
+  static const silver = Color(0xFFC0C0C0);
+  static const primaryLight = Color(0xFFFFE57F); 
   static const background = Color(0xFF0F1C2E);
-  static const backgroundDarker = Color(0xFF2D1B4E);
+  static const backgroundDarker = Color(0xFF140A33);
+  static const backgroundLighter = Color(0xFF1F2937);
   static const textPrimary = Color(0xFFFFFFFF);
   static const textSecondary = Color(0xFF9CA3AF);
   static const textTertiary = Color(0xFF6B7280);
   static const inputBackground = Color.fromRGBO(255, 255, 255, 0.05);
   static const success = Color(0xFF10B981);
   static const danger = Color(0xFFEF4444);
-  static const warning = Color(0xFFF59E0B); // Amber/orange for warnings
+  static const warning = Color(0xFFF59E0B);
 }
 
 class AppSpacing {

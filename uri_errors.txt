@@ -1,0 +1,17 @@
+﻿
+  error - Target of 
+URI doesn't exist: 'p
+ackage:mockito/mockit
+o.dart' - test\auth\m
+obile_app_access_test
+.dart:12:8 - 
+uri_does_not_exist
+  error - Target of 
+URI doesn't exist: 'p
+ackage:mockito/annota
+tions.dart' - test\au
+th\mobile_app_access_
+test.dart:13:8 - 
+uri_does_not_exist
+
+

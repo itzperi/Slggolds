@@ -19,7 +19,7 @@ class AdminAuthService {
     required String password,
   }) async {
     try {
-      debugPrint('AdminAuthService: Attempting login for username: ${username.toUpperCase()}');
+      debugPrint('AdminAuthService: Attempting admin login');
       
       String email;
       
@@ -31,7 +31,7 @@ class AdminAuthService {
         email = username.contains('@') ? username : '${username.toLowerCase()}@slggolds.com';
       }
       
-      debugPrint('AdminAuthService: Attempting Supabase auth with email: $email');
+      debugPrint('AdminAuthService: Attempting Supabase auth for admin user');
       
       // Authenticate using Supabase email + password
       final authResponse = await _client.auth.signInWithPassword(
@@ -52,12 +52,12 @@ class AdminAuthService {
           .maybeSingle();
 
       if (profileResponse == null || profileResponse['role'] != 'admin') {
-        debugPrint('AdminAuthService: ERROR - User is not an admin');
+      debugPrint('AdminAuthService: ERROR - User is not an admin');
         await _client.auth.signOut();
         throw Exception('Access denied: Admin privileges required');
       }
 
-      debugPrint('AdminAuthService: SUCCESS - Session created, user_id: ${authResponse.user?.id}');
+      debugPrint('AdminAuthService: SUCCESS - Admin session created');
       // Session is now set - AuthGate will handle routing
     } catch (e) {
       debugPrint('AdminAuthService: EXCEPTION - ${e.toString()}');

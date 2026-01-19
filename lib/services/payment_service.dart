@@ -165,82 +165,32 @@ class PaymentService {
       timeout: 30, // 30 second total timeout
       fn: () async {
         try {
-      print('PaymentService.insertPayment: DEBUG START');
-      print('  - userSchemeId: $userSchemeId');
-      print('  - customerId: $customerId');
-      print('  - staffId: $staffId');
-      print('  - amount: $amount');
-      print('  - paymentMethod: $paymentMethod');
-      print('  - metalRatePerGram: $metalRatePerGram');
-      
-      // Check current auth user
-      final currentUserId = _supabase.auth.currentUser?.id;
-      print('  - current auth.uid(): $currentUserId');
-      
-      // Check current user's profile
-      try {
-        final profileResponse = await _supabase
-            .from('profiles')
-            .select('id, role, user_id')
-            .eq('user_id', currentUserId ?? '')
-            .maybeSingle();
-        print('  - current user profile: $profileResponse');
-        if (profileResponse != null) {
-          print('  - profile.id: ${profileResponse['id']}');
-          print('  - profile.role: ${profileResponse['role']}');
-          print('  - staffId matches profile.id: ${staffId == profileResponse['id']}');
-        }
-      } catch (e) {
-        print('  - ERROR checking profile: $e');
-      }
-      
-      // Check staff assignment
-      try {
-        final assignmentResponse = await _supabase
-            .from('staff_assignments')
-            .select('staff_id, customer_id, is_active')
-            .eq('staff_id', staffId)
-            .eq('customer_id', customerId)
-            .maybeSingle();
-        print('  - staff_assignment: $assignmentResponse');
-      } catch (e) {
-        print('  - ERROR checking assignment: $e');
-      }
-      
-      final gstAmount = amount * 0.03;
-      final netAmount = amount * 0.97;
-      final metalGramsAdded = netAmount / metalRatePerGram;
+          final gstAmount = amount * 0.03;
+          final netAmount = amount * 0.97;
+          final metalGramsAdded = netAmount / metalRatePerGram;
 
-      final paymentDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      final paymentTime = DateFormat('HH:mm:ss').format(DateTime.now());
+          final paymentDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
+          final paymentTime = DateFormat('HH:mm:ss').format(DateTime.now());
 
-      // DEBUG: Log exact values being inserted
-      debugPrint('PaymentService.insertPayment: DEBUG VALUES:');
-      debugPrint('  - staffId being inserted: $staffId');
-      debugPrint('  - customerIdParam: $customerId');
-      debugPrint('  - auth.uid(): ${_supabase.auth.currentUser?.id}');
-      
-      print('PaymentService.insertPayment: Attempting insert...');
-      await _supabase.from('payments').insert({
-        'user_scheme_id': userSchemeId,
-        'customer_id': customerId,
-        'staff_id': staffId,
-        'amount': amount,
-        'gst_amount': gstAmount,
-        'net_amount': netAmount,
-        'payment_method': paymentMethod,
-        'payment_date': paymentDate,
-        'payment_time': paymentTime,
-        'status': 'completed',
-        'metal_rate_per_gram': metalRatePerGram,
-        'metal_grams_added': metalGramsAdded,
-        'is_reversal': false,
-        'device_id': deviceId,
-        'client_timestamp': clientTimestamp.toIso8601String(),
-      });
-          print('PaymentService.insertPayment: ✅ SUCCESS');
+          await _supabase.from('payments').insert({
+            'user_scheme_id': userSchemeId,
+            'customer_id': customerId,
+            'staff_id': staffId,
+            'amount': amount,
+            'gst_amount': gstAmount,
+            'net_amount': netAmount,
+            'payment_method': paymentMethod,
+            'payment_date': paymentDate,
+            'payment_time': paymentTime,
+            'status': 'completed',
+            'metal_rate_per_gram': metalRatePerGram,
+            'metal_grams_added': metalGramsAdded,
+            'is_reversal': false,
+            'device_id': deviceId,
+            'client_timestamp': clientTimestamp.toIso8601String(),
+          });
         } catch (e) {
-          print('PaymentService.insertPayment: ❌ ERROR - $e');
+          debugPrint('PaymentService.insertPayment: error during insert');
           rethrow;
         }
       },

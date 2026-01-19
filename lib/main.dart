@@ -11,6 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart' as provider;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'screens/login_screen.dart';
 import 'screens/customer/dashboard_screen.dart';
 import 'screens/auth/pin_setup_screen.dart';
@@ -21,6 +22,8 @@ import 'services/role_routing_service.dart';
 import 'services/offline_sync_service.dart';
 import 'state/auth/auth_state_provider.dart' as auth_state;
 import 'state/navigation/app_router_provider.dart';
+import 'state/auth/auth_flow_provider.dart' as auth_flow;
+import 'utils/secure_storage_helper.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,16 +38,16 @@ Future<void> main() async {
   if (sentryDsn != null && sentryDsn.isNotEmpty) {
     try {
       // Initialize Sentry only if DSN is provided
-      // await SentryFlutter.init(
-      //   (options) {
-      //     options.dsn = sentryDsn;
-      //     options.environment = kDebugMode ? 'development' : 'production';
-      //     options.tracesSampleRate = 0.2; // Capture 20% of transactions
-      //   },
-      //   appRunner: () => _runApp(),
-      // );
-      // For now, we'll use the regular runApp but prepare for Sentry integration
-      debugPrint('Sentry DSN found but Sentry initialization commented out. Enable when ready.');
+      await SentryFlutter.init(
+        (options) {
+          options.dsn = sentryDsn;
+          options.environment = kDebugMode ? 'development' : 'production';
+          options.tracesSampleRate = 0.2; // Capture 20% of transactions
+        },
+        appRunner: () => _runApp(),
+      );
+      debugPrint('Sentry initialized successfully.');
+      return;
     } catch (e) {
       debugPrint('Failed to initialize Sentry: $e');
     }
@@ -58,10 +61,10 @@ Future<void> main() async {
     // In production, send to error tracking service
     if (sentryDsn != null && sentryDsn.isNotEmpty) {
       // TODO: Uncomment when Sentry is initialized
-      // Sentry.captureException(
-      //   details.exception,
-      //   stackTrace: details.stack,
-      // );
+      Sentry.captureException(
+        details.exception,
+        stackTrace: details.stack,
+      );
     }
     
     if (kDebugMode) {
@@ -78,7 +81,7 @@ Future<void> main() async {
     // Send to error tracking service
     if (sentryDsn != null && sentryDsn.isNotEmpty) {
       // TODO: Uncomment when Sentry is initialized
-      // Sentry.captureException(error, stackTrace: stack);
+      Sentry.captureException(error, stackTrace: stack);
     }
     
     return true; // Prevent app crash
@@ -114,16 +117,13 @@ Future<void> _runApp() async {
   // Start offline sync service (GAP-048) - listens for connectivity and syncs queued payments
   OfflineSyncService.instance.start();
 
-  // One-time session bootstrap - NO LONGER reads Supabase (now a no-op)
-  final authFlowNotifier = AuthFlowNotifier();
-  authFlowNotifier.initializeSession();
-
   // Create ProviderContainer to watch Riverpod auth state
   // This allows us to react to Riverpod auth state changes and update Provider
   final container = ProviderContainer();
-  
+
   // Wire Provider to react to Riverpod auth state (ONE-WAY: Riverpod → Provider)
   // This replaces the old dual-authority pattern where Provider also read Supabase
+  final authFlowNotifier = container.read(auth_flow.authFlowProvider);
   container.listen(
     auth_state.authStateProvider,
     (previous, next) {
@@ -227,10 +227,7 @@ Future<void> _runApp() async {
   runApp(
     ProviderScope(
       parent: container, // Use the container that watches auth state
-      child: provider.ChangeNotifierProvider.value(
-        value: authFlowNotifier,
-        child: const MyApp(),
-      ),
+      child: const MyApp(),
     ),
   );
 }
@@ -240,8 +237,6 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // AuthFlowNotifier is created in main() and passed via ChangeNotifierProvider.value
-    // This ensures initializeSession() runs before UI builds
     return MaterialApp(
       title: 'SLG Thangangal',
       debugShowCheckedModeBanner: false,
@@ -253,13 +248,9 @@ class MyApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: provider.Consumer<AuthFlowNotifier>(
-        builder: (context, authFlow, child) {
-          return Consumer(
-            builder: (_, ref, __) {
-              return ref.watch(appRouterProvider(context));
-            },
-          );
+      home: Consumer(
+        builder: (context, ref, child) {
+          return ref.watch(appRouterProvider);
         },
       ),
     );
@@ -358,48 +349,44 @@ class _AuthGateState extends State<AuthGate> {
       final userId = Supabase.instance.client.auth.currentUser?.id;
       debugPrint('AuthGate._checkRoleAndRoute: Got userId = $userId');
       
-      if (userId == null) {
-        debugPrint('AuthGate._checkRoleAndRoute: No userId, signing out');
-        await Supabase.instance.client.auth.signOut();
-        authFlow.forceLogout();
-        if (mounted) {
-          setState(() {
-            _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
-            _isCheckingRole = false;
-          });
+      String? profileId;
+      String? role;
+
+      if (userId != null) {
+        debugPrint('AuthGate._checkRoleAndRoute: Fetching profile for userId = $userId');
+        final profileResponse = await Supabase.instance.client
+            .from('profiles')
+            .select('id, role')
+            .eq('user_id', userId)
+            .maybeSingle();
+        
+        if (profileResponse != null) {
+          profileId = profileResponse['id'] as String?;
+          role = profileResponse['role'] as String?;
         }
-        return;
       }
 
-      debugPrint('AuthGate._checkRoleAndRoute: Fetching profile for userId = $userId');
-      final profileResponse = await Supabase.instance.client
-          .from('profiles')
-          .select('id, role')
-          .eq('user_id', userId)
-          .maybeSingle();
+      // If no userId or profile not found by userId, try phone-based lookup (GAP-099)
+      if (profileId == null) {
+        debugPrint('AuthGate._checkRoleAndRoute: Falling back to phone-based lookup');
+        final phone = await SecureStorageHelper.getSavedPhone();
+        if (phone != null) {
+          final formattedPhone = phone.startsWith('+91') ? phone : '+91$phone';
+          final profileResponse = await Supabase.instance.client
+              .from('profiles')
+              .select('id, role')
+              .eq('phone', formattedPhone)
+              .maybeSingle();
+          
+          if (profileResponse != null) {
+            profileId = profileResponse['id'] as String?;
+            role = profileResponse['role'] as String?;
+          }
+        }
+      }
 
-      debugPrint('AuthGate._checkRoleAndRoute: Profile response = $profileResponse');
-
-      if (profileResponse == null) {
+      if (profileId == null || role == null) {
         debugPrint('AuthGate._checkRoleAndRoute: No profile found, signing out');
-        await Supabase.instance.client.auth.signOut();
-        authFlow.forceLogout();
-        if (mounted) {
-          setState(() {
-            _roleBasedScreen = const LoginScreen(key: ValueKey('login_screen'));
-            _isCheckingRole = false;
-          });
-        }
-        return;
-      }
-
-      final role = profileResponse['role'] as String?;
-      final profileId = profileResponse['id'] as String?;
-
-      debugPrint('AuthGate._checkRoleAndRoute: role = $role, profileId = $profileId');
-
-      if (role == null || profileId == null) {
-        debugPrint('AuthGate._checkRoleAndRoute: Role or profileId null, signing out');
         await Supabase.instance.client.auth.signOut();
         authFlow.forceLogout();
         if (mounted) {
@@ -446,7 +433,7 @@ class _AuthGateState extends State<AuthGate> {
           _roleBasedScreen = targetScreen;
           _isCheckingRole = false;
         });
-        debugPrint('AuthGate._checkRoleAndRoute: ROUTED TO ${_roleBasedScreen.runtimeType}');
+        debugPrint('AuthGate._checkRoleAndRoute: SUCCESS - ROUTED TO ${_roleBasedScreen.runtimeType}');
       }
     } catch (e, stackTrace) {
       debugPrint('AuthGate._checkRoleAndRoute: ERROR caught - $e');

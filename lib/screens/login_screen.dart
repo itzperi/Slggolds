@@ -5,22 +5,24 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../state/auth/auth_flow_provider.dart';
 import '../utils/constants.dart';
 import '../utils/secure_storage_helper.dart';
 import '../services/auth_service.dart';
 import '../services/auth_flow_notifier.dart';
+import '../services/auth_config.dart';
 import 'otp_screen.dart';
 import 'auth/pin_login_screen.dart';
 
-class LoginScreen extends StatefulWidget {
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _phoneController = TextEditingController();
   final AuthService _authService = AuthService();
   final _focusNode = FocusNode();
@@ -80,6 +82,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _onButtonPressed() async {
     final phone = _phoneController.text.trim();
+    final cleanedPhone = phone.trim();
 
     if (phone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -115,24 +118,23 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // Check if continuing with PIN
-    if (_hasSavedPhone && phone == _savedPhone) {
-      final isPinSet = await SecureStorageHelper.isPinSet();
-      if (isPinSet) {
-        // Navigate to PIN login
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PinLoginScreen(phone: phone),
-            ),
-          );
-        }
-        return;
+    // Save phone for routing fallback in AuthGate
+    await SecureStorageHelper.savePhone(cleanedPhone);
+
+    final isPinSet = await SecureStorageHelper.isPinSet();
+    if (isPinSet && _savedPhone == cleanedPhone) {
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PinLoginScreen(phone: cleanedPhone),
+          ),
+        );
       }
+      return;
     }
 
-    // Otherwise, send OTP
+    // Otherwise, send OTP for first-time login or if PIN not set
     await _sendOtp();
   }
 
@@ -168,47 +170,67 @@ class _LoginScreenState extends State<LoginScreen> {
     final supabase = Supabase.instance.client;
     final cleanedPhone = phone.trim();
 
-    debugPrint("Checking phone: $cleanedPhone");
-
     try {
       final user = await supabase
-          .schema('public')
-          .from('users')
-          .select('id, phone, role, is_active, is_developer')
-          .eq('phone', cleanedPhone)
+          .from('profiles')
+          .select('id, phone, role, active')
+          .eq('phone', cleanedPhone.startsWith('+91') ? cleanedPhone : '+91$cleanedPhone')
           .maybeSingle();
 
-      debugPrint("Supabase response: $user");
-
       if (user == null) {
-        _showError("This number is not registered");
+        // NEW USER - Proceed to OTP for registration (GAP-099)
+        _navigateToOtpScreen(cleanedPhone, null);
         return;
       }
 
-      if (user['is_active'] != true) {
+      if (user['active'] != true) {
         _showError("Account is inactive");
         return;
       }
 
-      // SUCCESS
-      if (mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => OTPScreen(
-              phone: cleanedPhone,
-              user: user,
-            ),
-          ),
-        );
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      // REGISTERED USER - Go to PIN login (User request: ask for password)
+      _navigateToPinLogin(cleanedPhone);
     } catch (e, stack) {
-      debugPrint("PHONE CHECK ERROR: $e");
+      debugPrint("PHONE CHECK ERROR (redacted)");
       debugPrintStack(stackTrace: stack);
-      _showError("Error checking phone number");
+
+      if (AuthConfig.allowBypassWithoutWhitelist) {
+        debugPrint("PHONE CHECK ERROR: Bypassing error for testing (no PII)");
+        _navigateToOtpScreen(cleanedPhone, null);
+        return;
+      }
+      _showError("Error checking phone number: $e");
+    }
+  }
+
+  void _navigateToOtpScreen(String phone, Map<String, dynamic>? user) {
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => OTPScreen(
+            phone: phone,
+            user: user,
+          ),
+        ),
+      );
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _navigateToPinLogin(String phone) {
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PinLoginScreen(phone: phone),
+        ),
+      );
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -558,12 +580,12 @@ class _LoginScreenState extends State<LoginScreen> {
               Center(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    debugPrint('LoginScreen: Staff Login button tapped');
-                    final authFlow = Provider.of<AuthFlowNotifier>(context, listen: false);
-                    debugPrint('LoginScreen: Got instance hashCode = ${authFlow.hashCode}');
-                    authFlow.goToStaffLogin();
-                  },
+                    onTap: () {
+                      debugPrint('LoginScreen: Staff Login button tapped');
+                      final authFlow = ref.read(authFlowProvider);
+                      debugPrint('LoginScreen: Got instance hashCode = ${authFlow.hashCode}');
+                      authFlow.goToStaffLogin();
+                    },
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                     decoration: BoxDecoration(
@@ -605,10 +627,10 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ],
           ),
-            ),
-          ],
         ),
-      ),
-    );
+      ],
+    ),
+  ),
+);
   }
 }

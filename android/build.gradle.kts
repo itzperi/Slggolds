@@ -47,14 +47,12 @@ subprojects {
             }
         }
     }
-    
-    // Ensure all subprojects use Kotlin language version 1.8 or higher
-    afterEvaluate {
-        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-            kotlinOptions {
-                languageVersion = "1.8"
-                apiVersion = "1.8"
-            }
+
+    // Configure Kotlin compiler options for all subprojects to ensure compatibility
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        compilerOptions {
+            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
+            apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_8)
         }
     }
 }
